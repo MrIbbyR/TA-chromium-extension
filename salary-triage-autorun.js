@@ -124,7 +124,7 @@
       return;
     }
 
-    await sleep(650);
+    await sleep(300);
 
     const collect = globalThis.__srCollectApplicantClickTargets;
     if (typeof collect !== "function") {
@@ -231,7 +231,7 @@
       if (!isProfilePage()) return;
 
       const cfgWait = state.config && state.config.screeningWaitMs;
-      const delay = Math.max(400, parseInt(state.initialDelayMs, 10) || parseInt(cfgWait, 10) || 1000);
+      const delay = Math.max(250, parseInt(state.initialDelayMs, 10) || parseInt(cfgWait, 10) || 500);
       await sleep(delay);
 
       const controlsOk = await waitUntilSrControlsReady(queueReadyCap);
@@ -308,8 +308,8 @@
       });
 
       const afterMoveMs = Math.max(
-        500,
-        parseInt(state.config && state.config.afterMoveNavigateMs, 10) || 1600
+        300,
+        parseInt(state.config && state.config.afterMoveNavigateMs, 10) || 600
       );
       if (result.moved) await sleep(afterMoveMs);
 

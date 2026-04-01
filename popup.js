@@ -59,10 +59,12 @@ const sumCurrencyPill = document.getElementById("sumCurrencyPill");
 const sumErrors    = document.getElementById("sumErrors");
 const sumErrorPill = document.getElementById("sumErrorPill");
 
-const tabOffer  = document.getElementById("tabOffer");
-const tabSalary = document.getElementById("tabSalary");
-const panelOffer  = document.getElementById("panel-offer");
-const panelSalary = document.getElementById("panel-salary");
+const tabOffer   = document.getElementById("tabOffer");
+const tabSalary  = document.getElementById("tabSalary");
+const tabKeyword = document.getElementById("tabKeyword");
+const panelOffer   = document.getElementById("panel-offer");
+const panelSalary  = document.getElementById("panel-salary");
+const panelKeyword = document.getElementById("panel-keyword");
 
 const salaryMax       = document.getElementById("salaryMax");
 const salaryMin       = document.getElementById("salaryMin");
@@ -84,15 +86,17 @@ const SALARY_STORAGE_KEYS = [
 
 // ── Tabs ──
 function showPanel(which) {
-  const offer = which === "offer";
-  tabOffer.classList.toggle("active", offer);
-  tabSalary.classList.toggle("active", !offer);
-  panelOffer.classList.toggle("visible", offer);
-  panelSalary.classList.toggle("visible", !offer);
+  tabOffer.classList.toggle("active", which === "offer");
+  tabSalary.classList.toggle("active", which === "salary");
+  tabKeyword.classList.toggle("active", which === "keyword");
+  panelOffer.classList.toggle("visible", which === "offer");
+  panelSalary.classList.toggle("visible", which === "salary");
+  panelKeyword.classList.toggle("visible", which === "keyword");
 }
 
 tabOffer.addEventListener("click", () => showPanel("offer"));
 tabSalary.addEventListener("click", () => showPanel("salary"));
+tabKeyword.addEventListener("click", () => showPanel("keyword"));
 
 // ── Cost assist settings (chrome.storage) ──
 async function loadSalarySettings() {
@@ -151,7 +155,7 @@ function readSalaryConfig() {
     maxSalary: salaryMax.value.trim(),
     minSalary: salaryMin.value.trim(),
     dryRun: salaryDryRun.checked,
-    screeningWaitMs: salaryWait.value.trim() === "" ? 1200 : parseInt(salaryWait.value, 10),
+    screeningWaitMs: salaryWait.value.trim() === "" ? 600 : parseInt(salaryWait.value, 10),
   };
 }
 
@@ -489,6 +493,147 @@ btnSalaryStop.addEventListener("click", async () => {
     setSalaryStatus("salary-done", "Stopped");
   } catch (e) {
     salaryLog("✗", String(e?.message || e));
+  }
+});
+
+// ── Keyword Search: DOM refs ──
+const kwInput         = document.getElementById("kwInput");
+const kwMinHits       = document.getElementById("kwMinHits");
+const kwDryRun        = document.getElementById("kwDryRun");
+const btnKwGo         = document.getElementById("btnKwGo");
+const btnKwStop       = document.getElementById("btnKwStop");
+const kwStatusBox     = document.getElementById("kwStatusBox");
+const kwStatusDot     = document.getElementById("kwStatusDot");
+const kwStatusLabel   = document.getElementById("kwStatusLabel");
+const kwLogEl         = document.getElementById("kwLog");
+
+const KW_STORAGE_KEYS = ["kwTriageKeywords", "kwTriageMinHits", "kwTriageDryRun"];
+
+async function loadKwSettings() {
+  const s = await chrome.storage.local.get(KW_STORAGE_KEYS);
+  if (s.kwTriageKeywords != null) kwInput.value = String(s.kwTriageKeywords);
+  if (s.kwTriageMinHits != null) kwMinHits.value = String(s.kwTriageMinHits);
+  if (s.kwTriageDryRun === true) kwDryRun.checked = true;
+}
+
+async function saveKwSettings() {
+  await chrome.storage.local.set({
+    kwTriageKeywords: kwInput.value.trim(),
+    kwTriageMinHits: kwMinHits.value.trim(),
+    kwTriageDryRun: kwDryRun.checked,
+  });
+}
+
+function readKwConfig() {
+  return {
+    keywords: kwInput.value.trim(),
+    minHits: kwMinHits.value.trim() === "" ? 2 : parseInt(kwMinHits.value, 10),
+    dryRun: kwDryRun.checked,
+  };
+}
+
+[kwInput, kwMinHits, kwDryRun].forEach((el) => {
+  if (!el) return;
+  el.addEventListener("change", () => saveKwSettings().catch(() => {}));
+});
+
+function kwLog(icon, msg) {
+  const line = document.createElement("div");
+  line.className = "log-line";
+  const cls = icon === "✓" ? "tick" : icon === "✗" ? "cross" : "wait";
+  line.innerHTML = `<span class="${cls}">${icon}</span><span class="msg">${msg}</span>`;
+  kwLogEl.appendChild(line);
+  kwLogEl.scrollTop = kwLogEl.scrollHeight;
+}
+
+function setKwStatus(state, label) {
+  kwStatusDot.className = "status-dot " + state;
+  kwStatusLabel.textContent = label;
+}
+
+loadKwSettings().catch(() => {});
+
+async function ensureKeywordCore(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: false },
+    files: ["keyword-triage-core.js"],
+  });
+}
+
+btnKwGo.addEventListener("click", async () => {
+  await saveKwSettings().catch(() => {});
+  const cfg = readKwConfig();
+  if (!cfg.keywords) {
+    kwStatusBox.classList.add("visible");
+    kwLogEl.innerHTML = "";
+    kwLog("✗", "Enter at least one keyword.");
+    setKwStatus("error", "Need keywords");
+    return;
+  }
+
+  const tab = await getSmartRecruitersTab();
+  if (!tab) {
+    kwStatusBox.classList.add("visible");
+    kwLogEl.innerHTML = "";
+    kwLog("✗", "Open SmartRecruiters (applicant list).");
+    setKwStatus("error", "Wrong tab");
+    return;
+  }
+
+  btnKwGo.disabled = true;
+  kwStatusBox.classList.add("visible");
+  kwLogEl.innerHTML = "";
+  setKwStatus("salary-running", "Starting…");
+
+  try {
+    await ensureKeywordCore(tab.id);
+    const [inj] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: false },
+      func: (c) => globalThis.__srKeywordTriageStartQueue(c),
+      args: [cfg],
+    });
+    const out = inj?.result;
+    const lines = out?.log || [];
+    for (const e of lines) kwLog(e.ok ? "✓" : "✗", e.msg);
+    if (out?.ok && out?.queued) {
+      const modeHint = out.mode === "click"
+        ? "Click-through queue: opening each name."
+        : "URL queue: jumping to each profile.";
+      kwLog("✓", modeHint);
+      kwLog("✓", "Keep this browser tab focused; results saved when finished.");
+      setKwStatus("salary-done", "Keyword search running — keep tab focused");
+    } else {
+      setKwStatus("error", "Queue failed");
+    }
+  } catch (e) {
+    kwLog("✗", String(e?.message || e));
+    setKwStatus("error", "Failed");
+  }
+
+  btnKwGo.disabled = false;
+});
+
+btnKwStop.addEventListener("click", async () => {
+  const tab = await getSmartRecruitersTab();
+  kwStatusBox.classList.add("visible");
+  kwLogEl.innerHTML = "";
+  if (!tab) {
+    kwLog("✗", "Open a SmartRecruiters tab to clear queue.");
+    return;
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: false },
+      func: () => {
+        try {
+          sessionStorage.removeItem("sr_ext_keyword_triage_v1");
+        } catch (_) {}
+      },
+    });
+    kwLog("✓", "Keyword search queue cleared.");
+    setKwStatus("salary-done", "Stopped");
+  } catch (e) {
+    kwLog("✗", String(e?.message || e));
   }
 });
 

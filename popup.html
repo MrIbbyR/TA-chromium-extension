@@ -92,6 +92,33 @@
       border-top-right-radius: 10px;
       border-top-left-radius: 0;
     }
+    #panel-keyword.panel.visible {
+      border-color: #3d5a8a;
+      border-top-right-radius: 10px;
+      border-top-left-radius: 0;
+    }
+
+    #panel-keyword .field-row label { color: #d0d8e8; }
+    #panel-keyword .field-row textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      resize: vertical;
+      min-height: 56px;
+    }
+    #panel-keyword .field-row textarea::placeholder { color: #6a7585; }
+    #panel-keyword .field-row textarea:focus {
+      outline: none;
+      border-color: var(--salary-accent);
+    }
+    #panel-keyword .field-row input::placeholder { color: #6a7585; }
+    #panel-keyword .field-hint { color: #d0d8e8; }
+    #panel-keyword .salary-check { color: #d0d8e8; }
 
     /* ── Offer panel (existing) ── */
     .drop-zone {
@@ -434,6 +461,7 @@
   <div class="tab-bar">
     <button type="button" class="tab active" id="tabOffer" data-panel="panel-offer">Mr Offer</button>
     <button type="button" class="tab salary" id="tabSalary" data-panel="panel-salary">Cost assist</button>
+    <button type="button" class="tab keyword" id="tabKeyword" data-panel="panel-keyword">Keyword</button>
   </div>
 
   <!-- ── Mr Offer ── -->
@@ -505,7 +533,7 @@
       </div>
       <div class="field-row">
         <label for="salaryWait">Wait after Screening (ms)</label>
-        <input type="number" id="salaryWait" placeholder="1200" min="200" step="100" />
+        <input type="number" id="salaryWait" placeholder="600" min="200" step="100" />
       </div>
       <label class="salary-check">
         <input type="checkbox" id="salaryDryRun" />
@@ -524,6 +552,39 @@
         <span class="status-label" id="salaryStatusLabel">Idle</span>
       </div>
       <div class="log" id="salaryLog"></div>
+    </div>
+  </div>
+
+  <!-- ── Keyword Search ── -->
+  <div class="panel" id="panel-keyword">
+    <div class="salary-fields">
+      <div class="field-row">
+        <label for="kwInput">Keywords (comma-separated)</label>
+        <textarea id="kwInput" rows="3" placeholder="e.g. Python, AWS, Machine Learning, Chennai"></textarea>
+        <div class="field-hint">Abbreviations like ML, AI, NLP auto-expand to full forms</div>
+      </div>
+      <div class="field-row">
+        <label for="kwMinHits">Min keywords to match</label>
+        <input type="number" id="kwMinHits" placeholder="2" min="1" step="1" />
+        <div class="field-hint">Move forward only if at least this many keywords are found</div>
+      </div>
+      <label class="salary-check">
+        <input type="checkbox" id="kwDryRun" />
+        Dry run (scan keywords only, never click Move)
+      </label>
+    </div>
+
+    <div class="salary-actions">
+      <button type="button" class="btn-salary primary" id="btnKwGo">Go</button>
+      <button type="button" class="btn-salary danger" id="btnKwStop">Stop</button>
+    </div>
+
+    <div class="status" id="kwStatusBox">
+      <div class="status-header">
+        <div class="status-dot" id="kwStatusDot"></div>
+        <span class="status-label" id="kwStatusLabel">Idle</span>
+      </div>
+      <div class="log" id="kwLog" style="max-height:130px"></div>
     </div>
   </div>
 

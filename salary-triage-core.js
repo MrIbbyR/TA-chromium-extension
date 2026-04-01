@@ -321,7 +321,7 @@
       if (/more\s+actions/i.test(txt)) continue;
       if (txt === "more" || (/^more\b/i.test(raw) && raw.length <= 32)) {
         await clickEl(win, el);
-        await sleep(450);
+        await sleep(250);
         if (log) log.push({ ok: true, msg: 'Tab row: opened "More"' });
         return true;
       }
@@ -339,7 +339,7 @@
       const raw = (el.textContent || "").replace(/\s+/g, " ").trim();
       if (/^screening$/i.test(raw)) {
         await clickEl(win, el);
-        await sleep(500);
+        await sleep(250);
         log.push({ ok: true, msg: "Screening (tab strip label)" });
         return true;
       }
@@ -364,7 +364,7 @@
     const targetHidden = isEffectivelyHidden(target, win);
     if (hostHidden && targetHidden && !allowHiddenClick) return false;
     await clickEl(win, target);
-    await sleep(500);
+    await sleep(250);
     log.push({ ok: true, msg: "Opened Screening (" + sourceTag + ")" });
     return true;
   }
@@ -403,13 +403,13 @@
         if (/^screening$/i.test(txt)) {
           const clickHost = el.closest("button, [role='tab'], [role='button'], spl-tab") || el.parentElement || el;
           await clickEl(win, clickHost);
-          await sleep(500);
+          await sleep(250);
           log.push({ ok: true, msg: "Opened Screening (typography in tab area)" });
           return true;
         }
       }
 
-      await sleep(200);
+      await sleep(120);
     }
 
     log.push({
@@ -902,12 +902,12 @@
       return { log, moved: false, skipped: true, amount: null, inBudget: null };
     }
 
-    var baseWait = parseInt(config.screeningWaitMs, 10) || 1200;
-    var minWait = Math.max(1000, Math.min(baseWait, 1500));
+    var baseWait = parseInt(config.screeningWaitMs, 10) || 600;
+    var minWait = Math.max(250, Math.min(baseWait, 600));
     await sleep(minWait);
 
-    var pairsMaxWait = Math.max(baseWait, 6000);
-    var pollStep = 300;
+    var pairsMaxWait = Math.max(baseWait, 3500);
+    var pollStep = 150;
     var pairs = [];
     var pollStart = Date.now();
     while (Date.now() - pollStart < pairsMaxWait) {
@@ -917,7 +917,7 @@
         pairs = [];
       }
       if (pairs.length >= 2) break;
-      if (pairs.length === 1 && (Date.now() - pollStart) >= 2000) break;
+      if (pairs.length === 1 && (Date.now() - pollStart) >= 600) break;
       await sleep(pollStep);
     }
     if (pairs.length === 0) {
@@ -965,9 +965,9 @@
       return { log, moved: false, skipped: false, amount: amount, inBudget: true };
     }
 
-    const moveSettleMs = Math.max(400, parseInt(config.moveSettleMs, 10) || 1800);
-    const moveReadyMs = Math.max(800, parseInt(config.moveButtonReadyMs, 10) || 4500);
-    const step = 200;
+    const moveSettleMs = Math.max(300, parseInt(config.moveSettleMs, 10) || 700);
+    const moveReadyMs = Math.max(500, parseInt(config.moveButtonReadyMs, 10) || 2500);
+    const step = 150;
 
     let moveHost = null;
     let btn = null;
@@ -1001,11 +1001,11 @@
     try {
       btn.scrollIntoView({ block: "center", behavior: "instant" });
     } catch (_) {}
-    await sleep(200);
+    await sleep(80);
     try {
       btn.focus && btn.focus();
     } catch (_) {}
-    await sleep(60);
+    await sleep(30);
     fireMoveForwardPipelineClick(win, btn, moveHost);
     log.push({ ok: true, msg: "Clicked Move forward (inner + spl host) — waiting for SR to apply" });
     await sleep(moveSettleMs);
@@ -1494,11 +1494,11 @@
     const win = window;
     const log = [];
     const KEY = "sr_ext_salary_triage_v1";
-    const waitMs = Math.max(200, parseInt(config.screeningWaitMs, 10) || 1200);
-    const moveSettleMs = Math.max(400, parseInt(config.moveSettleMs, 10) || 1800);
-    const afterMoveNavigateMs = Math.max(500, parseInt(config.afterMoveNavigateMs, 10) || 1600);
-    const moveButtonReadyMs = Math.max(800, parseInt(config.moveButtonReadyMs, 10) || 4500);
-    const queueReadyMaxMs = Math.max(2000, parseInt(config.queueReadyMaxMs, 10) || 16000);
+    const waitMs = Math.max(200, parseInt(config.screeningWaitMs, 10) || 600);
+    const moveSettleMs = Math.max(300, parseInt(config.moveSettleMs, 10) || 700);
+    const afterMoveNavigateMs = Math.max(300, parseInt(config.afterMoveNavigateMs, 10) || 600);
+    const moveButtonReadyMs = Math.max(500, parseInt(config.moveButtonReadyMs, 10) || 2500);
+    const queueReadyMaxMs = Math.max(2000, parseInt(config.queueReadyMaxMs, 10) || 10000);
     const baseState = {
       returnUrl: win.location.href,
       initialDelayMs: Math.max(400, waitMs),

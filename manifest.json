@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SR Offer Filler",
-  "version": "1.5.0",
-  "description": "SmartRecruiters: offer form fill from Excel + Cost assist (screening budget + Move forward queue)",
+  "version": "1.6.0",
+  "description": "SmartRecruiters: offer form fill, Cost assist (salary triage), and Keyword Search (resume keyword matching + Move forward queue)",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "background": {
     "service_worker": "background.js"
@@ -24,7 +24,7 @@
   "content_scripts": [
     {
       "matches": ["https://*.smartrecruiters.com/*"],
-      "js": ["salary-triage-core.js", "salary-triage-autorun.js"],
+      "js": ["salary-triage-core.js", "salary-triage-autorun.js", "keyword-triage-core.js", "keyword-triage-autorun.js"],
       "run_at": "document_idle",
       "all_frames": true
     }
