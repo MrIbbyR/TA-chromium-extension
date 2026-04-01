@@ -6,9 +6,12 @@
   "use strict";
 
   const DEFAULT_QUESTION_HINTS = [
+    // English
     "expected salary",
+    "desired salary",
     "salary expectation",
     "salary expectations",
+    "salary rate",
     "specify your salary expectations",
     "please specify your salary",
     "salary expectations in the currency",
@@ -23,17 +26,61 @@
     "currency of the country",
     "currency of the country you re applying",
     "applying for gross",
+    "preferred local currency",
+    "desired salary rate",
     "annual expected ctc",
     "expected ctc in inr",
     "expected ctc",
     "annual ctc in inr",
   ];
 
+  /** Non-English salary/compensation keywords for fallback matching across markets. */
+  const INTL_SALARY_KEYWORDS = [
+    // Turkish
+    "maaş", "maaş beklentisi", "ücret", "ücret beklentisi",
+    // German
+    "gehalt", "gehaltsvorstellung", "vergütung", "bruttojahresgehalt",
+    // French
+    "salaire", "rémunération", "prétentions salariales",
+    // Spanish
+    "salario", "remuneración", "expectativa salarial", "sueldo",
+    // Portuguese
+    "salário", "remuneração", "pretensão salarial",
+    // Italian
+    "stipendio", "retribuzione", "ral",
+    // Dutch
+    "salaris", "salarisverw",
+    // Polish
+    "wynagrodzenie", "oczekiwania finansowe",
+    // Czech / Slovak
+    "plat", "mzda", "mzdové",
+    // Romanian
+    "salariu", "așteptări salariale",
+    // Bulgarian
+    "заплата", "възнаграждение",
+    // Russian / Ukrainian
+    "зарплата", "оклад", "заробітна",
+    // Arabic
+    "راتب", "الراتب المتوقع",
+    // Hindi
+    "वेतन", "अपेक्षित वेतन",
+    // Chinese
+    "薪资", "期望薪资", "薪酬",
+    // Japanese
+    "給与", "希望年収",
+    // Korean
+    "급여", "희망연봉",
+    // Thai
+    "เงินเดือน",
+    // Malay / Indonesian
+    "gaji",
+  ];
+
   const SCREENING_TAB_ID = "st-screening";
   const MOVE_FORWARD_ID = "st-moveForward";
 
   const CERT_START = /^i\s+certify\s+that\s+to\s+the\s+best\s+of\s+my\s+knowledge/i;
-  const Q_START = /^(please|specify|provide|enter|select|choose|state|list|give|what|which|when|where|how|are\s+you|do\s+you|did\s+you|have\s+you|i\s+certify)/i;
+  const Q_START = /^(please|specify|provide|enter|select|choose|state|list|give|what|which|when|where|how|are\s+you|do\s+you|did\s+you|have\s+you|i\s+certify|lütfen|bitte|veuillez|por\s+favor|indique|geben|inserisci|podaj|uveďte|введите|يرجى|कृपया|请|ご)/i;
 
   function sleep(ms) {
     return new Promise(function (r) {
@@ -41,12 +88,21 @@
     });
   }
 
+  /** Lowercase + collapse whitespace, preserving Unicode letters (accents, CJK, Cyrillic, Arabic…). */
   function normText(s) {
-    return String(s || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    try {
+      return String(s || "")
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    } catch (_) {
+      return String(s || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9\u00C0-\u024F\u0400-\u04FF\u0600-\u06FF\u0E00-\u0E7F\u3000-\u9FFF\uAC00-\uD7AF]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
   }
 
   function isVisible(el, win) {
@@ -455,7 +511,16 @@
         return s.trim();
       })
       .filter(Boolean);
-    return DEFAULT_QUESTION_HINTS.concat(extra).map(normText);
+    return DEFAULT_QUESTION_HINTS.concat(INTL_SALARY_KEYWORDS).concat(extra).map(normText);
+  }
+
+  /** Check if normalized question text contains any international salary keyword. */
+  function hasIntlSalaryKeyword(qNorm) {
+    for (let i = 0; i < INTL_SALARY_KEYWORDS.length; i++) {
+      var kw = normText(INTL_SALARY_KEYWORDS[i]);
+      if (kw && qNorm.indexOf(kw) >= 0) return true;
+    }
+    return false;
   }
 
   function isExpectedCtcQuestionNorm(qNorm) {
@@ -527,7 +592,8 @@
         /\bsalary\b/.test(qn) ||
         /\bcompensation\b/.test(qn) ||
         /\bremuneration\b/.test(qn) ||
-        /\bctc\b/.test(qn);
+        /\bctc\b/.test(qn) ||
+        hasIntlSalaryKeyword(qn);
       if (!hasSalary) continue;
       let sc2 = 0.25;
       if (qn.indexOf("expect") >= 0) sc2 += 0.35;
@@ -538,7 +604,9 @@
       if (qn.indexOf("per year") >= 0 || qn.indexOf("annum") >= 0) sc2 += 0.15;
       if (qn.indexOf("ctc") >= 0) sc2 += 0.35;
       if (qn.indexOf("expected") >= 0) sc2 += 0.4;
+      if (qn.indexOf("desired") >= 0) sc2 += 0.35;
       if (qn.indexOf("inr") >= 0) sc2 += 0.1;
+      if (hasIntlSalaryKeyword(qn)) sc2 += 0.35;
       if (sc2 > fbScore) {
         fbScore = sc2;
         fbPair = pool[j];

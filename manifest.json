@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SR Offer Filler",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "description": "SmartRecruiters: offer form fill from Excel + Cost assist (screening budget + Move forward queue)",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "background": {

@@ -66,8 +66,6 @@ const panelSalary = document.getElementById("panel-salary");
 
 const salaryMax       = document.getElementById("salaryMax");
 const salaryMin       = document.getElementById("salaryMin");
-const salaryHints     = document.getElementById("salaryHints");
-const salaryMoveHint  = document.getElementById("salaryMoveHint");
 const salaryWait      = document.getElementById("salaryWait");
 const salaryDryRun    = document.getElementById("salaryDryRun");
 const btnSalaryQueue    = document.getElementById("btnSalaryQueue");
@@ -80,8 +78,6 @@ const salaryLogEl       = document.getElementById("salaryLog");
 const SALARY_STORAGE_KEYS = [
   "salaryTriageMax",
   "salaryTriageMin",
-  "salaryTriageHints",
-  "salaryTriageMove",
   "salaryTriageWait",
   "salaryTriageDryRun",
 ];
@@ -103,8 +99,6 @@ async function loadSalarySettings() {
   const s = await chrome.storage.local.get(SALARY_STORAGE_KEYS);
   if (s.salaryTriageMax != null) salaryMax.value = String(s.salaryTriageMax);
   if (s.salaryTriageMin != null) salaryMin.value = String(s.salaryTriageMin);
-  if (s.salaryTriageHints) salaryHints.value = s.salaryTriageHints;
-  if (s.salaryTriageMove) salaryMoveHint.value = s.salaryTriageMove;
   if (s.salaryTriageWait != null) salaryWait.value = String(s.salaryTriageWait);
   if (s.salaryTriageDryRun === true) salaryDryRun.checked = true;
 }
@@ -113,8 +107,6 @@ async function saveSalarySettings() {
   await chrome.storage.local.set({
     salaryTriageMax: salaryMax.value.trim(),
     salaryTriageMin: salaryMin.value.trim(),
-    salaryTriageHints: salaryHints.value.trim(),
-    salaryTriageMove: salaryMoveHint.value.trim(),
     salaryTriageWait: salaryWait.value.trim(),
     salaryTriageDryRun: salaryDryRun.checked,
   });
@@ -158,14 +150,12 @@ function readSalaryConfig() {
   return {
     maxSalary: salaryMax.value.trim(),
     minSalary: salaryMin.value.trim(),
-    questionHints: salaryHints.value.trim(),
-    moveButtonIncludes: salaryMoveHint.value.trim(),
     dryRun: salaryDryRun.checked,
     screeningWaitMs: salaryWait.value.trim() === "" ? 1200 : parseInt(salaryWait.value, 10),
   };
 }
 
-[salaryMax, salaryMin, salaryHints, salaryMoveHint, salaryWait, salaryDryRun].forEach((el) => {
+[salaryMax, salaryMin, salaryWait, salaryDryRun].forEach((el) => {
   if (!el) return;
   el.addEventListener("change", () => saveSalarySettings().catch(() => {}));
 });

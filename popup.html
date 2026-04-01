@@ -34,44 +34,15 @@
     }
 
     .header {
-      padding: 14px 16px 10px;
+      padding: 8px 16px;
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
-      gap: 10px;
-      position: relative;
-      overflow: hidden;
+      justify-content: flex-end;
     }
-    .header::before {
-      content: '';
-      position: absolute;
-      top: -20px; right: -20px;
-      width: 100px; height: 100px;
-      background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
-      pointer-events: none;
-    }
-    .logo {
-      width: 28px; height: 28px;
-      background: var(--accent);
-      border-radius: 6px;
-      display: flex; align-items: center; justify-content: center;
-      font-family: var(--display);
-      font-weight: 800;
-      font-size: 13px;
-      color: #0d0f12;
-      flex-shrink: 0;
-    }
-    .header-text h1 {
-      font-family: var(--display);
-      font-size: 14px;
-      font-weight: 700;
-      color: var(--text);
-      letter-spacing: 0.02em;
-    }
-    .header-text p {
-      font-size: 10px;
-      color: var(--muted);
-      margin-top: 1px;
+    .logo-img {
+      height: 36px;
+      width: auto;
     }
 
     /* ── Tabs ── */
@@ -97,13 +68,8 @@
     }
     .tab:hover { color: var(--text); border-color: #333; }
     .tab.active {
-      color: var(--accent);
-      background: var(--bg);
-      border-color: var(--accent);
-      box-shadow: 0 -2px 12px var(--accent-dim);
-    }
-    .tab.active.salary {
       color: var(--salary-accent);
+      background: var(--bg);
       border-color: #3d5a8a;
       box-shadow: 0 -2px 12px var(--salary-dim);
     }
@@ -118,7 +84,7 @@
     }
     .panel.visible { display: block; }
     #panel-offer.panel.visible {
-      border-color: var(--accent);
+      border-color: #3d5a8a;
       border-top-left-radius: 0;
     }
     #panel-salary.panel.visible {
@@ -140,8 +106,8 @@
       background: var(--surface);
     }
     .drop-zone:hover, .drop-zone.drag-over {
-      border-color: var(--accent);
-      background: var(--accent-dim);
+      border-color: var(--salary-accent);
+      background: var(--salary-dim);
     }
     .drop-zone.drag-over { transform: scale(1.01); }
     .drop-zone input[type="file"] {
@@ -165,8 +131,8 @@
 
     .file-loaded {
       margin: 14px 14px 0;
-      background: var(--accent-dim);
-      border: 1.5px solid var(--accent);
+      background: var(--salary-dim);
+      border: 1.5px solid var(--salary-accent);
       border-radius: 10px;
       padding: 10px 12px;
       display: none;
@@ -179,7 +145,7 @@
     .file-loaded .file-name {
       font-size: 11px;
       font-weight: 500;
-      color: var(--accent);
+      color: var(--salary-accent);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -217,7 +183,7 @@
       max-width: 0;
     }
     .preview-table td:last-child {
-      color: var(--accent);
+      color: var(--salary-accent);
       font-weight: 500;
       text-align: right;
     }
@@ -227,8 +193,8 @@
       margin: 12px 14px;
       width: calc(100% - 28px);
       padding: 11px;
-      background: var(--accent);
-      color: #0d0f12;
+      background: var(--salary-accent);
+      color: #0d1117;
       border: none;
       border-radius: 8px;
       font-family: var(--display);
@@ -241,8 +207,8 @@
     }
     .run-btn.visible { display: block; }
     .run-btn:hover {
-      background: #00ffb3;
-      box-shadow: 0 0 20px var(--accent-glow);
+      filter: brightness(1.08);
+      box-shadow: 0 0 16px var(--salary-dim);
       transform: translateY(-1px);
     }
     .run-btn:disabled {
@@ -279,6 +245,9 @@
       font-family: var(--display);
       font-weight: 600;
     }
+    #panel-salary .field-row label {
+      color: #d0d8e8;
+    }
     .field-row input[type="text"],
     .field-row input[type="number"] {
       width: 100%;
@@ -290,11 +259,16 @@
       font-family: var(--mono);
       font-size: 12px;
     }
+    #panel-salary .field-row input::placeholder {
+      color: #6a7585;
+    }
     .field-row input:focus {
       outline: none;
       border-color: var(--salary-accent);
     }
-    .field-hint { font-size: 9px; color: var(--muted); margin-top: 3px; line-height: 1.35; }
+    .field-hint { font-size: 9px; color: #b0b8c8; margin-top: 3px; line-height: 1.35; }
+    #panel-salary .field-hint { color: #d0d8e8; }
+    #panel-salary .salary-check { color: #d0d8e8; }
     .salary-check {
       display: flex;
       align-items: center;
@@ -366,10 +340,10 @@
       flex-shrink: 0;
     }
     .status-dot.running {
-      background: var(--accent);
+      background: var(--salary-accent);
       animation: pulse 1s infinite;
     }
-    .status-dot.done { background: var(--accent); }
+    .status-dot.done { background: var(--salary-accent); }
     .status-dot.error { background: var(--warn); }
     .status-dot.salary-running {
       background: var(--salary-accent);
@@ -402,7 +376,7 @@
     #salaryLog { max-height: 130px; }
 
     .log-line { display: flex; gap: 6px; }
-    .log-line .tick { color: var(--accent); flex-shrink: 0; }
+    .log-line .tick { color: var(--salary-accent); flex-shrink: 0; }
     .log-line .cross { color: var(--warn); flex-shrink: 0; }
     .log-line .wait { color: var(--muted); flex-shrink: 0; }
     .log-line .msg { color: var(--muted); }
@@ -421,7 +395,7 @@
       padding: 7px 10px;
       text-align: center;
     }
-    .summary-pill.good { border-color: var(--accent); background: var(--accent-dim); }
+    .summary-pill.good { border-color: var(--salary-accent); background: var(--salary-dim); }
     .summary-pill.bad  { border-color: var(--warn);  background: var(--warn-dim); }
     .summary-pill .pill-num {
       font-family: var(--display);
@@ -430,7 +404,7 @@
       display: block;
       line-height: 1;
     }
-    .summary-pill.good .pill-num { color: var(--accent); }
+    .summary-pill.good .pill-num { color: var(--salary-accent); }
     .summary-pill.bad  .pill-num { color: var(--warn); }
     .summary-pill .pill-label {
       font-size: 9px;
@@ -444,19 +418,17 @@
     .usage-count {
       margin: 10px 14px 12px;
       font-size: 10px;
-      color: var(--muted);
+      color: #d0d8e8;
     }
-    .usage-count .usage-num { color: var(--accent); font-weight: 600; }
+    .usage-count .usage-num { color: var(--salary-accent); font-weight: 600; }
   </style>
 </head>
 <body>
 
   <div class="header">
-    <div class="logo">SR</div>
-    <div class="header-text">
-      <h1>SR Tools</h1>
-      <p>SmartRecruiters helpers</p>
-    </div>
+    <svg class="logo-img" viewBox="0 0 90 50" xmlns="http://www.w3.org/2000/svg">
+      <text x="12" y="37" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="34" font-weight="800" fill="#ffffff" letter-spacing="2">NIQ</text>
+    </svg>
   </div>
 
   <div class="tab-bar">
@@ -514,6 +486,10 @@
         <span class="pill-label">Errors</span>
       </div>
     </div>
+
+    <div class="usage-count" id="usageCount">
+      Runs: <span class="usage-num" id="usageNum">0</span>
+    </div>
   </div>
 
   <!-- ── Cost assist ── -->
@@ -522,20 +498,10 @@
       <div class="field-row">
         <label for="salaryMax">Max budget (same units as screening answers)</label>
         <input type="text" id="salaryMax" placeholder="e.g. 3500000, 35,00,000, or 35L" inputmode="decimal" />
-        <div class="field-hint">Uses <strong>Annual Expected CTC</strong> when both Current and Expected exist (INR ranges like 30,00,000 to 35,00,000 supported). Min/max here can use lakhs shorthand (35L).</div>
       </div>
       <div class="field-row">
         <label for="salaryMin">Min (optional)</label>
         <input type="text" id="salaryMin" placeholder="0 or 10L" inputmode="decimal" />
-      </div>
-      <div class="field-row">
-        <label for="salaryHints">Extra question keywords (optional)</label>
-        <input type="text" id="salaryHints" placeholder="comma-separated: unique phrases from each market’s salary question (e.g. CTC, brutto, package)" />
-      </div>
-      <div class="field-row">
-        <label for="salaryMoveHint">Move button contains (optional)</label>
-        <input type="text" id="salaryMoveHint" placeholder="e.g. Move forward — or leave empty" />
-        <div class="field-hint">Substring match on button text. Empty = prefer “Move forward”, then any short “Move…” control.</div>
       </div>
       <div class="field-row">
         <label for="salaryWait">Wait after Screening (ms)</label>
@@ -548,9 +514,8 @@
     </div>
 
     <div class="salary-actions">
-      <button type="button" class="btn-salary primary" id="btnSalaryQueue">Run on this list → go</button>
-      <button type="button" class="btn-salary danger" id="btnSalaryStop">Stop queue</button>
-      <p class="field-hint" style="margin-top:4px;">Open the job <strong>Applicants</strong> list first. Cost assist uses one tab: it follows profile URLs when available, otherwise <strong>clicks each name</strong> in order. After each profile it returns to the list and opens the next. Scroll so every row you need is loaded. Extra profile tabs close when the run finishes.</p>
+      <button type="button" class="btn-salary primary" id="btnSalaryQueue">Go</button>
+      <button type="button" class="btn-salary danger" id="btnSalaryStop">Stop</button>
     </div>
 
     <div class="status" id="salaryStatusBox">
@@ -560,11 +525,6 @@
       </div>
       <div class="log" id="salaryLog"></div>
     </div>
-  </div>
-
-  <div class="usage-count" id="usageCount">
-    <span class="usage-label">Mr Offer uses:</span>
-    <span class="usage-num" id="usageNum">0</span>
   </div>
 
   <script src="xlsx-mini.js"></script>
