@@ -21,7 +21,20 @@ node --test tests/boolean-parser.test.js
 node --test tests/salary-parsing.test.js
 node --test tests/keyword-matching.test.js
 node --test tests/keyword-expansions.test.js
+
+# E2E (Playwright, dev-only — headed locally, headless when CI=1)
+cd tests/e2e && npm ci && npx playwright test
 ```
+
+## Releasing
+
+CI (`.github/workflows/ci.yml`) runs unit + e2e tests on every push/PR and uploads a packaged zip as a build artifact.
+
+1. Bump `"version"` in `manifest.json` (semver: MAJOR = breaking workflow/stored-data change, MINOR = feature, PATCH = fix).
+2. Add a matching `## [x.y.z] - YYYY-MM-DD` entry at the top of `CHANGELOG.md` — `tests/release.test.js` fails if they differ.
+3. Commit, then `git tag vX.Y.Z && git push origin main vX.Y.Z`. The tag build checks tag == manifest version and publishes a GitHub Release with `niq-ta-helper-vX.Y.Z.zip` and the changelog notes.
+
+Distribute only zips built by `scripts/package.sh` (CI or local) — never hand-zip the folder, which ships tests, docs and dev config.
 
 ## Loading the Extension
 

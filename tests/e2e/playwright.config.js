@@ -7,7 +7,8 @@ module.exports = defineConfig({
   timeout: 30_000,
   retries: 0,
   use: {
-    headless: false,
+    // Headed locally for debugging; headless in CI (no display on the runner).
+    headless: !!process.env.CI,
     viewport: { width: 1280, height: 800 },
   },
   projects: [

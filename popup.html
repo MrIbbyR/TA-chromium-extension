@@ -38,11 +38,16 @@
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
-      justify-content: flex-end;
+      justify-content: space-between;
     }
     .logo-img {
       height: 36px;
       width: auto;
+    }
+    .app-version {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.5px;
     }
 
     /* ── Tabs ── */
@@ -640,6 +645,7 @@
 <body>
 
   <div class="header">
+    <span class="app-version" id="appVersion" title="Extension version — include this when reporting an issue"></span>
     <svg class="logo-img" viewBox="0 0 90 50" xmlns="http://www.w3.org/2000/svg">
       <text x="12" y="37" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="34" font-weight="800" fill="#ffffff" letter-spacing="2">NIQ</text>
     </svg>

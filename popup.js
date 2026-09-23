@@ -29,6 +29,14 @@
   } catch (_) {}
 })();
 
+// ── Version label: read from manifest.json so it can never drift from what's installed ──
+(function showAppVersion() {
+  try {
+    const el = document.getElementById("appVersion");
+    if (el) el.textContent = "v" + chrome.runtime.getManifest().version;
+  } catch (_) {}
+})();
+
 // "New Fitments_India Base Pay" workbook: offer numbers live on the "External"
 // sheet (external hires) or the "Internal" sheet (internal moves) — the two
 // tabs are independent calculators with their own input cells, so the popup
