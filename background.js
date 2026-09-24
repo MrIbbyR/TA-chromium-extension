@@ -1,4 +1,4 @@
-// background.js — service worker: parallel keyword queue coordinator + tab cleanup (MV3)
+// background.js — service worker: parallel queue coordinator (leases + watchdog) + tab cleanup (MV3)
 
 // GDPR: queue state lives in chrome.storage.session — extension-isolated, in-memory,
 // cleared when the browser closes. Content scripts are "untrusted" contexts, so they
@@ -87,174 +87,318 @@ function showNotification(id, title, message) {
   } catch (_) {}
 }
 
-// ── Parallel queue state ──
-// feature: "keyword" | "salary" — both share this orchestration; only the result
-// shape, the saved last-run key, and the done-notification wording differ.
-let parallelQueue = null; // { feature, urls: [], config: {}, workers: N, returnUrl, results: [], active: Map<tabId, url>, stopped: bool }
+// ── Parallel queue: per-URL state with leases ──
+// One queue drives both Keyword and Cost Assist (feature: "keyword" | "salary"); only
+// the result shape, the saved last-run key and the notification wording differ.
+//
+// Every URL carries its own state:
+//
+//   pending ──lease──► leased ──srWorkerDone──► done
+//      ▲                 │  lease expired (watchdog) / tab closed
+//      └─ attempts left ─┤
+//                        └──► failed ("timeout" | "tab_closed")
+//
+// A lease binds one URL to one worker tab until `leaseUntil`. The whole queue lives in
+// chrome.storage.session (in-memory, extension-only, cleared on browser close), so an
+// MV3 service-worker restart loses nothing; a chrome.alarms watchdog (which wakes a
+// stopped worker, unlike setTimeout) reclaims leases from hung or orphaned tabs. The
+// run is finished when no URL is pending or leased.
+const QUEUE_KEY = "srParallelQueue";
+const WATCHDOG_ALARM = "srQueueWatchdog";
+// Assigned → the page must check in via srIsParallelWorker within this window.
+const START_TIMEOUT_MS = 60 * 1000;
+// Checked in → must report srWorkerDone within this window. Renewed by every message
+// the worker sends (resume focus / capture polling), so only a silent tab expires.
+const WORK_TIMEOUT_MS = { keyword: 180 * 1000, salary: 90 * 1000 };
+const MAX_ATTEMPTS = 2;
+// GDPR: abandon runs older than this so candidate URLs don't linger (no real run exceeds 2h).
+const STALE_QUEUE_MS = 2 * 60 * 60 * 1000;
 
-// Persist remaining URLs + results so the queue survives MV3 service-worker restarts.
-function persistQueueUrls() {
-  if (!parallelQueue) return;
-  // GDPR data-minimization: keep diagLog OUT of this intermediate, restart-survival
-  // copy. It has no consumer here (the popup reads diagLog only from the final
-  // keywordTriageLastRun, which is purged on a 24h TTL) and would otherwise orphan in
-  // chrome.storage.local with no TTL if Chrome is closed mid-run. diagLog still flows
-  // to the final results via the in-memory parallelQueue.results push in handleWorkerDone.
-  const slimResults = parallelQueue.results.map((r) => {
-    if (!r || !r.diagLog) return r;
-    const { diagLog, ...rest } = r;
-    return rest;
+// The pre-lease queue lived in chrome.storage.local — drop any leftovers.
+chrome.storage.local.remove([
+  "srParallelQueueUrls", "srParallelQueueResults", "srParallelQueueReturnUrl",
+  "srParallelQueueWorkers", "srParallelQueueStartedAt", "srParallelQueueFeature",
+  "srParallelWorkerActive",
+]).catch(() => {});
+
+let queueCache;                    // undefined = not loaded yet, null = no run
+let queueLock = Promise.resolve();
+
+// Run fn(ctx) with exclusive access to the queue. ctx.q is the queue (or null) and fn
+// may mutate or replace it; the result is persisted before the next caller runs, so
+// concurrent worker messages can't interleave a read-modify-write.
+function withQueue(fn) {
+  const run = queueLock.then(async () => {
+    if (queueCache === undefined) {
+      const s = await chrome.storage.session.get(QUEUE_KEY).catch(() => ({}));
+      queueCache = (s && s[QUEUE_KEY]) || null;
+    }
+    const ctx = { q: queueCache };
+    try {
+      return await fn(ctx);
+    } finally {
+      queueCache = ctx.q;
+      if (ctx.q) await chrome.storage.session.set({ [QUEUE_KEY]: ctx.q }).catch(() => {});
+      else await chrome.storage.session.remove(QUEUE_KEY).catch(() => {});
+    }
   });
-  chrome.storage.local.set({
-    srParallelQueueUrls: parallelQueue.urls.slice(),
-    srParallelQueueResults: slimResults,
-    srParallelQueueReturnUrl: parallelQueue.returnUrl,
-    srParallelQueueWorkers: parallelQueue.workers,
-    srParallelQueueStartedAt: parallelQueue.startedAt || Date.now(),
-    srParallelQueueFeature: parallelQueue.feature || "keyword",
-  }).catch(() => {});
+  queueLock = run.catch(() => {});
+  return run;
 }
 
-function clearPersistedQueue() {
-  chrome.storage.local.remove([
-    "srParallelQueueUrls", "srParallelQueueResults",
-    "srParallelQueueReturnUrl", "srParallelQueueWorkers",
-    "srParallelQueueStartedAt", "srParallelQueueFeature",
-  ]).catch(() => {});
+function leaseOf(q, tabId) {
+  if (!q || tabId == null) return null;
+  for (const url of q.order) {
+    const item = q.items[url];
+    if (item.state === "leased" && item.tabId === tabId) return { url, item };
+  }
+  return null;
 }
 
-function resetParallelQueue() {
-  if (parallelQueue && parallelQueue.active) {
-    for (const tabId of parallelQueue.active.keys()) {
-      try {
-        chrome.tabs.remove(tabId).catch(() => {});
-      } catch (_) {}
+// Sync check for code outside the lock (resume focus). Workers have always checked in
+// via srIsParallelWorker before they ask for focus, so the cache is loaded by then.
+function isWorkerTab(tabId) {
+  return !!leaseOf(queueCache, tabId);
+}
+
+const countIn = (q, state) => q.order.filter((u) => q.items[u].state === state).length;
+const nextPending = (q) => q.order.find((u) => q.items[u].state === "pending") || null;
+const workTimeout = (q) => WORK_TIMEOUT_MS[q.feature] || WORK_TIMEOUT_MS.keyword;
+
+function lease(q, url, tabId) {
+  const item = q.items[url];
+  item.state = "leased";
+  item.tabId = tabId;
+  item.started = false;
+  item.attempts = (item.attempts || 0) + 1;
+  item.leaseUntil = Date.now() + START_TIMEOUT_MS;
+}
+
+function release(q, url, state, extra) {
+  const item = q.items[url];
+  item.state = state;
+  item.tabId = null;
+  item.started = false;
+  item.leaseUntil = null;
+  Object.assign(item, extra);
+}
+
+function shapeResult(feature, url, m) {
+  // GDPR minimization: for salary only `moved` is kept — the amount is never persisted.
+  if (feature === "salary") return { url, moved: !!m.moved, error: m.error || undefined };
+  return {
+    url,
+    hitCount: m.hitCount || 0,
+    matchedKeywords: m.matchedKeywords || [],
+    booleanPass: m.booleanPass,
+    notesPosted: !!m.notesPosted,
+    notesFailReason: m.notesFailReason || "",
+    textStats: m.textStats || null,
+    diagLog: m.diagLog || undefined,
+  };
+}
+
+const closeTab = (tabId) => { if (tabId != null) chrome.tabs.remove(tabId).catch(() => {}); };
+
+// Open a new worker tab for the next pending URL, if a slot is free.
+function launchWorker() {
+  return withQueue(async (ctx) => {
+    const q = ctx.q;
+    if (!q || q.stopped || countIn(q, "leased") >= q.workers) return;
+    const url = nextPending(q);
+    if (!url) { finishIfDrained(ctx); return; }
+    let tab;
+    try {
+      tab = await chrome.tabs.create({ url, active: false });
+    } catch (_) {
+      setTimeout(launchWorker, jitter(1600));
+      return;
     }
-  }
-  parallelQueue = null;
-  clearPersistedQueue();
+    lease(q, url, tab.id);
+  });
 }
 
-async function launchNextWorker() {
-  if (!parallelQueue || parallelQueue.stopped) return;
-  if (!parallelQueue.urls.length) {
-    if (parallelQueue.active.size === 0) finishParallelQueue();
-    return;
-  }
-  if (parallelQueue.active.size >= parallelQueue.workers) return;
-
-  const url = parallelQueue.urls.shift();
-  persistQueueUrls();
-  try {
-    const tab = await chrome.tabs.create({ url: url, active: false });
-    parallelQueue.active.set(tab.id, url);
-  } catch (e) {
-    if (parallelQueue) { parallelQueue.urls.unshift(url); persistQueueUrls(); }
-    setTimeout(launchNextWorker, jitter(1600));
-  }
+// Schedule launches for free worker slots (e.g. after a timeout or closed tab).
+// Surplus calls are harmless: launchWorker re-checks capacity under the lock.
+function scheduleFill(q) {
+  if (!q || q.stopped) return;
+  const free = Math.min(q.workers - countIn(q, "leased"), countIn(q, "pending"));
+  for (let i = 1; i <= free; i++) setTimeout(launchWorker, jitter(1800) * i);
 }
 
-function finishParallelQueue() {
-  if (!parallelQueue) return;
-  const feature = parallelQueue.feature || "keyword";
-  const results = parallelQueue.results || [];
-  const returnUrl = parallelQueue.returnUrl || "";
+// Reuse a worker tab for its next URL (fewer fresh tabs = less bot-like).
+function navigateWorker(tabId, url) {
+  chrome.tabs.update(tabId, { url }).catch(() => {
+    // Tab vanished before reuse — nothing was processed, so put the URL back.
+    withQueue((ctx) => {
+      const l = leaseOf(ctx.q, tabId);
+      if (!l || l.url !== url || l.item.started) return;
+      release(ctx.q, url, "pending", { attempts: l.item.attempts - 1 });
+      scheduleFill(ctx.q);
+    });
+  });
+}
 
-  clearPersistedQueue();
+// Drop the current run without saving results (a new run replaced it, or it went stale).
+function abandonQueue(ctx) {
+  const q = ctx.q;
+  if (!q) return;
+  for (const url of q.order) if (q.items[url].state === "leased") closeTab(q.items[url].tabId);
+  ctx.q = null;
+  chrome.alarms.clear(WATCHDOG_ALARM).catch(() => {});
+}
 
-  if (feature === "salary") {
-    const moved = results.filter(r => r.moved).length;
+// If nothing is pending or leased (or the run was stopped), save results, notify and
+// clear the queue. Returns true if the run finished.
+function finishIfDrained(ctx, { stopped = false } = {}) {
+  const q = ctx.q;
+  if (!q) return false;
+  if (!stopped && (countIn(q, "pending") || countIn(q, "leased"))) return false;
+
+  for (const url of q.order) {
+    const item = q.items[url];
+    if (item.state === "leased") { closeTab(item.tabId); release(q, url, "pending"); }
+  }
+  const results = q.order
+    .map((u) => q.items[u])
+    .filter((item) => item.state === "done" || item.state === "failed")
+    .map((item) => item.result);
+
+  const finishedAt = Date.now();
+  // Failed URLs (tab_closed / timeout) were never scanned — report them apart, not as misses.
+  const failed = results.filter((r) => r.error).length;
+  const scanned = results.length - failed;
+  const plural = (n) => n + " profile" + (n !== 1 ? "s" : "");
+  if (q.feature === "salary") {
+    const moved = results.filter((r) => r.moved).length;
     chrome.storage.local
-      .set({
-        salaryTriageLastRun: {
-          finishedAt: Date.now(),
-          results: results,
-          parallel: true,
-        },
-        srParallelWorkerActive: false,
-      })
+      .set({ salaryTriageLastRun: { finishedAt, results, parallel: true } })
       .catch(() => {});
     showNotification(
-      "srParallelDone_" + Date.now(),
+      "srParallelDone_" + finishedAt,
       "NIQ TA Helper — Cost assist done",
-      moved + " profile" + (moved !== 1 ? "s" : "") + " moved forward out of " + results.length + " screened."
+      plural(moved) + " moved forward out of " + scanned + " screened." +
+        (failed ? " " + failed + " could not be screened (tab closed or timed out)." : "")
     );
   } else {
-    const matched = results.filter(r => r.hitCount > 0).length;
+    const matched = results.filter((r) => r.hitCount > 0).length;
     chrome.storage.local
-      .set({
-        keywordTriageLastRun: {
-          finishedAt: Date.now(),
-          results: results,
-          parallel: true,
-        },
-        srParallelWorkerActive: false,
-      })
+      .set({ keywordTriageLastRun: { finishedAt, results, parallel: true } })
       .catch(() => {});
     showNotification(
-      "srParallelDone_" + Date.now(),
+      "srParallelDone_" + finishedAt,
       "NIQ TA Helper — Keyword search done",
-      matched + " profile" + (matched !== 1 ? "s" : "") + " matched out of " + results.length + " scanned."
+      plural(matched) + " matched out of " + scanned + " scanned." +
+        (failed ? " " + failed + " could not be scanned (tab closed or timed out)." : "")
     );
   }
-  playBeepInSRTab(returnUrl);
-
-  parallelQueue = null;
+  playBeepInSRTab(q.returnUrl || "");
+  ctx.q = null;
+  chrome.alarms.clear(WATCHDOG_ALARM).catch(() => {});
+  return true;
 }
 
-// ── Worker done handler (extracted so it can be called after async queue restore) ──
-function handleWorkerDone(message, sender, sendResponse) {
-  if (!parallelQueue) { sendResponse({ next: false }); return; }
-  const tabId = sender.tab && sender.tab.id;
-  const url = (tabId && parallelQueue.active.get(tabId)) || "";
-
-  if ((parallelQueue.feature || "keyword") === "salary") {
-    // GDPR minimization: only `moved` is kept — salary amount is never persisted.
-    parallelQueue.results.push({
-      url: url,
-      moved: !!message.moved,
-      error: message.error || undefined,
-    });
-  } else {
-    parallelQueue.results.push({
-      url: url,
-      hitCount: message.hitCount || 0,
-      matchedKeywords: message.matchedKeywords || [],
-      booleanPass: message.booleanPass,
-      notesPosted: !!message.notesPosted,
-      notesFailReason: message.notesFailReason || "",
-      textStats: message.textStats || null,
-      diagLog: message.diagLog || undefined,
-    });
-  }
-
-  if (tabId) parallelQueue.active.delete(tabId);
-
-  if (parallelQueue.stopped || !parallelQueue.urls.length) {
-    if (tabId) chrome.tabs.remove(tabId).catch(() => {});
-    persistQueueUrls();
-    if (parallelQueue.active.size === 0) finishParallelQueue();
-    sendResponse({ next: false });
-    return;
-  }
-
-  const nextUrl = parallelQueue.urls.shift();
-  parallelQueue.active.set(tabId, nextUrl);
-  persistQueueUrls();
-  sendResponse({ next: true, url: nextUrl });
-  setTimeout(() => {
-    if (tabId) {
-      chrome.tabs.update(tabId, { url: nextUrl }).catch(() => {
-        if (parallelQueue) {
-          parallelQueue.active.delete(tabId);
-          parallelQueue.urls.unshift(nextUrl);
-          persistQueueUrls();
-          launchNextWorker();
-        }
-      });
+function startQueue(feature, message) {
+  return withQueue(async (ctx) => {
+    abandonQueue(ctx);
+    const urls = [...new Set(message.urls || [])];
+    const workers = Math.max(1, Math.min(5, message.workers || 2));
+    ctx.q = {
+      runId: "r" + Date.now(),
+      feature,
+      workers,
+      returnUrl: message.returnUrl || "",
+      startedAt: Date.now(),
+      stopped: false,
+      order: urls,
+      items: Object.fromEntries(urls.map((u) => [u, { state: "pending", attempts: 0 }])),
+    };
+    // Workers read their config from here when they check in.
+    await chrome.storage.local.set({ srParallelWorkerConfig: message.config || {} }).catch(() => {});
+    chrome.alarms.create(WATCHDOG_ALARM, { periodInMinutes: 0.5 });
+    if (!urls.length) { finishIfDrained(ctx); return { queued: 0, workers }; }
+    // Stagger the first tabs (anti-detection): one now, the rest ~2.8s apart.
+    let delay = 0;
+    for (let i = 0; i < Math.min(workers, urls.length); i++) {
+      setTimeout(launchWorker, delay);
+      delay += jitter(2800);
     }
-  }, message.notesPosted ? jitter(2400) : jitter(1600));
+    return { queued: urls.length, workers };
+  });
 }
+
+function handleWorkerCheckIn(tabId) {
+  return withQueue((ctx) => {
+    const q = ctx.q;
+    const l = q && !q.stopped ? leaseOf(q, tabId) : null;
+    if (!l) return { active: false, feature: null };
+    l.item.started = true;
+    l.item.leaseUntil = Date.now() + workTimeout(q);
+    return { active: true, feature: q.feature };
+  });
+}
+
+function handleWorkerDone(tabId, message) {
+  return withQueue((ctx) => {
+    const q = ctx.q;
+    const l = leaseOf(q, tabId);
+    // Only the page that checked in for this lease may complete it. Anything else — a
+    // duplicate message, a tab whose lease the watchdog reclaimed, a tab from an older
+    // run — is ignored, so a URL is never recorded twice or with another URL's result.
+    if (!l || !l.item.started) return { next: false };
+    release(q, l.url, "done", { result: shapeResult(q.feature, l.url, message) });
+
+    const nextUrl = q.stopped ? null : nextPending(q);
+    if (!nextUrl) {
+      closeTab(tabId);
+      finishIfDrained(ctx);
+      return { next: false };
+    }
+    lease(q, nextUrl, tabId);
+    setTimeout(() => navigateWorker(tabId, nextUrl), message.notesPosted ? jitter(2400) : jitter(1600));
+    scheduleFill(q);
+    return { next: true, url: nextUrl };
+  });
+}
+
+// Any message from a worker that's still working proves it's alive — extend its lease.
+function renewLease(tabId) {
+  if (tabId == null) return;
+  withQueue((ctx) => {
+    const l = leaseOf(ctx.q, tabId);
+    if (l && l.item.started) l.item.leaseUntil = Date.now() + workTimeout(ctx.q);
+  });
+}
+
+function stopQueue() {
+  return withQueue((ctx) => {
+    const q = ctx.q;
+    if (!q) return null;
+    const doneCount = countIn(q, "done") + countIn(q, "failed");
+    q.stopped = true;
+    finishIfDrained(ctx, { stopped: true });
+    return doneCount;
+  });
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== WATCHDOG_ALARM) return;
+  withQueue((ctx) => {
+    const q = ctx.q;
+    if (!q) { chrome.alarms.clear(WATCHDOG_ALARM).catch(() => {}); return; }
+    const now = Date.now();
+    if (now - q.startedAt > STALE_QUEUE_MS) { abandonQueue(ctx); return; }
+    for (const url of q.order) {
+      const item = q.items[url];
+      if (item.state !== "leased" || item.leaseUntil > now) continue;
+      const tabId = item.tabId;
+      if (item.attempts < MAX_ATTEMPTS) release(q, url, "pending");
+      else release(q, url, "failed", { result: { url, error: "timeout" } });
+      closeTab(tabId);
+    }
+    if (!finishIfDrained(ctx)) scheduleFill(q);
+  });
+});
 
 // ── Resume-render focus manager ──
 // pdf.js does NOT render in hidden (background) worker tabs — Chrome pauses
@@ -290,7 +434,7 @@ function acquireResumeFocus(tabId) {
     if (resumeFocus.userTabId == null) {
       chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
         const t = tabs && tabs[0];
-        if (t && !(parallelQueue && parallelQueue.active.has(t.id))) resumeFocus.userTabId = t.id;
+        if (t && !isWorkerTab(t.id)) resumeFocus.userTabId = t.id;
         _grantResumeFocus(tabId);
         resolve();
       });
@@ -390,13 +534,26 @@ async function captureResumeFromTab(workerTabId, resumeTabId) {
 
 chrome.tabs.onCreated.addListener((tab) => {
   const opener = tab.openerTabId;
-  if (opener != null && resumeCapture.pending.has(opener)) {
+  if (opener == null) return;
+  if (resumeCapture.pending.has(opener)) {
     captureResumeFromTab(opener, tab.id);
+    return;
   }
+  // Any other tab a parallel worker opens (e.g. a resume-tab click that hit the
+  // attachment link) is a side effect nobody will look at — close it, or recruiters
+  // are left with a pile of "latest-resume" tabs. Only worker tabs: never a tab
+  // opened from the recruiter's own tabs. Via withQueue so it holds after an SW restart.
+  withQueue((ctx) => { if (leaseOf(ctx.q, opener)) closeTab(tab.id); });
 });
 
 // ── Message handler ──
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "srRequestResumeFocus" || message.type === "srReleaseResumeFocus" ||
+      message.type === "srArmResumeCapture" || message.type === "srGetResumeCapture") {
+    // Mid-profile worker activity (slow resume render/capture) — keep its lease alive.
+    renewLease(sender.tab && sender.tab.id);
+  }
+
   if (message.type === "srEnsureSessionAccess") {
     // Popup awaits this before seeding a queue so the content-script write to
     // chrome.storage.session is not denied by a not-yet-applied access level.
@@ -462,108 +619,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "srStartParallelKeywordQueue" || message.type === "srStartParallelSalaryQueue") {
-    resetParallelQueue();
     const feature = message.type === "srStartParallelSalaryQueue" ? "salary" : "keyword";
-    const urls = message.urls || [];
-    const workers = Math.max(1, Math.min(5, message.workers || 2));
-    const config = message.config || {};
-
-    parallelQueue = {
-      feature: feature,
-      urls: urls.slice(),
-      config: config,
-      workers: workers,
-      returnUrl: message.returnUrl || "",
-      results: [],
-      active: new Map(),
-      stopped: false,
-      startedAt: Date.now(),
-    };
-
-    chrome.storage.local
-      .set({
-        srParallelWorkerConfig: config,
-        srParallelWorkerActive: true,
-        srParallelQueueStartedAt: parallelQueue.startedAt,
-        srParallelQueueFeature: feature,
-      })
-      .then(() => {
-        let launched = 0;
-        function staggerLaunch() {
-          if (!parallelQueue || parallelQueue.stopped) return;
-          if (launched >= workers || !parallelQueue.urls.length) return;
-          launched++;
-          launchNextWorker();
-          if (launched < workers && parallelQueue.urls.length) {
-            setTimeout(staggerLaunch, jitter(2800));
-          }
-        }
-        staggerLaunch();
-      })
-      .catch(() => {});
-
-    sendResponse({ ok: true, queued: urls.length, workers: workers, feature: feature });
+    startQueue(feature, message).then(({ queued, workers }) =>
+      sendResponse({ ok: true, queued, workers, feature }));
     return true;
   }
 
   if (message.type === "srWorkerDone") {
-    // If the service worker was killed and restarted, parallelQueue is null.
-    // Try to restore from persisted storage so the run can continue.
-    if (!parallelQueue) {
-      chrome.storage.local.get(
-        ["srParallelWorkerActive", "srParallelWorkerConfig", "srParallelQueueUrls",
-         "srParallelQueueResults", "srParallelQueueReturnUrl", "srParallelQueueWorkers",
-         "srParallelQueueStartedAt", "srParallelQueueFeature"],
-        (stored) => {
-          if (chrome.runtime.lastError || !stored.srParallelWorkerActive || !stored.srParallelQueueUrls) {
-            sendResponse({ next: false });
-            return;
-          }
-          // GDPR: abandon stale queues (e.g. Chrome closed mid-run) so candidate
-          // URLs/results don't persist indefinitely. No real run exceeds 2 hours.
-          const startedAt = stored.srParallelQueueStartedAt || 0;
-          if (startedAt && Date.now() - startedAt > 2 * 60 * 60 * 1000) {
-            clearPersistedQueue();
-            chrome.storage.local.set({ srParallelWorkerActive: false }).catch(() => {});
-            sendResponse({ next: false });
-            return;
-          }
-          parallelQueue = {
-            feature: stored.srParallelQueueFeature || "keyword",
-            urls: stored.srParallelQueueUrls,
-            config: stored.srParallelWorkerConfig || {},
-            workers: stored.srParallelQueueWorkers || 2,
-            returnUrl: stored.srParallelQueueReturnUrl || "",
-            results: stored.srParallelQueueResults || [],
-            active: new Map(),
-            stopped: false,
-            startedAt: startedAt || Date.now(),
-          };
-          handleWorkerDone(message, sender, sendResponse);
-        }
-      );
-      return true;
-    }
-    handleWorkerDone(message, sender, sendResponse);
+    handleWorkerDone(sender.tab && sender.tab.id, message).then(sendResponse);
     return true;
   }
 
   if (message.type === "srStopParallelKeywordQueue") {
-    if (parallelQueue) {
-      const doneCount = parallelQueue.results.length;
-      parallelQueue.stopped = true;
-      for (const tabId of parallelQueue.active.keys()) {
-        chrome.tabs.remove(tabId).catch(() => {});
+    stopQueue().then((doneCount) => {
+      if (doneCount != null) {
+        showNotification(
+          "srStopped_" + Date.now(),
+          "NIQ TA Helper — Search stopped",
+          "Stopped after " + doneCount + " profile" + (doneCount !== 1 ? "s" : "") + "."
+        );
       }
-      parallelQueue.active.clear();
-      finishParallelQueue();
-      showNotification(
-        "srStopped_" + Date.now(),
-        "NIQ TA Helper — Search stopped",
-        "Stopped after " + doneCount + " profile" + (doneCount !== 1 ? "s" : "") + "."
-      );
-    }
-    sendResponse({ ok: true });
+      sendResponse({ ok: true });
+    });
     return true;
   }
 
@@ -579,17 +656,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "srIsParallelWorker") {
-    const tabId = sender.tab && sender.tab.id;
-    const active =
-      !!(
-        parallelQueue &&
-        !parallelQueue.stopped &&
-        tabId != null &&
-        parallelQueue.active.has(tabId)
-      );
-    // feature lets each autorun (salary vs keyword both run on every profile page)
-    // claim only the worker tabs that belong to its own queue.
-    sendResponse({ active, feature: active ? (parallelQueue.feature || "keyword") : null });
+    // Also the worker's check-in: it starts the lease's work timer. `feature` lets each
+    // autorun (salary and keyword both run on every profile page) claim only its own tabs.
+    handleWorkerCheckIn(sender.tab && sender.tab.id).then(sendResponse);
     return true;
   }
 });
@@ -599,9 +668,16 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (resumeFocus.holder === tabId || resumeFocus.queue.some((q) => q.tabId === tabId)) {
     releaseResumeFocus(tabId);
   }
-  if (!parallelQueue || !parallelQueue.active.has(tabId)) return;
-  const url = parallelQueue.active.get(tabId);
-  parallelQueue.active.delete(tabId);
-  parallelQueue.results.push({ url: url, error: "tab_closed" });
-  setTimeout(() => launchNextWorker(), jitter(1800));
+  withQueue((ctx) => {
+    const l = leaseOf(ctx.q, tabId);
+    if (!l) return; // not a worker, or one we closed ourselves (lease already released)
+    if (l.item.started) {
+      // Closed mid-profile — report it, don't retry (the recruiter may have closed it on purpose).
+      release(ctx.q, l.url, "failed", { result: { url: l.url, error: "tab_closed" } });
+    } else {
+      // Closed between profiles — nothing was processed, so the URL goes back in the queue.
+      release(ctx.q, l.url, "pending", { attempts: l.item.attempts - 1 });
+    }
+    if (!finishIfDrained(ctx)) scheduleFill(ctx.q);
+  });
 });

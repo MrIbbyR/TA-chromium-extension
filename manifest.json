@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "NIQ TA Helper",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Smartrecruiters TA helper for NIQ associates. Cost assist, Cntrl F Tagging & Boolean tagging and Offer automation",
-  "permissions": ["activeTab", "scripting", "storage", "tabs", "notifications"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "notifications", "alarms"],
   "background": {
     "service_worker": "background.js"
   },
