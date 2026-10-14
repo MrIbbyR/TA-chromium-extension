@@ -167,10 +167,13 @@ const workTimeout = (q) => WORK_TIMEOUT_MS[q.feature] || WORK_TIMEOUT_MS.keyword
 
 // ── Pace limit ──
 // One slot clock (q.nextSlotAt, persisted) spaces every profile load across all worker
-// tabs, so 3 workers don't mean 3× the request rate DataDome sees. The popup can pass
-// `profilesPerMinute`; the gap between slots is jittered like every other delay.
-const DEFAULT_PROFILES_PER_MINUTE = 6;
-const paceMs = (q) => 60000 / (q.profilesPerMinute || DEFAULT_PROFILES_PER_MINUTE);
+// tabs. The default pace is PROFILES_PER_MINUTE_PER_WORKER × workers (2× = 6/min,
+// 3× = 9/min): a single shared 6/min let two tabs use every slot, so 3× never opened
+// its third tab and ran no faster than 2×. The popup can pass `profilesPerMinute`;
+// the gap between slots is jittered like every other delay.
+const PROFILES_PER_MINUTE_PER_WORKER = 3;
+const defaultPace = (workers) => PROFILES_PER_MINUTE_PER_WORKER * workers;
+const paceMs = (q) => 60000 / (q.profilesPerMinute || defaultPace(q.workers || 2));
 
 // Reserve the next load slot at least minDelayMs from now; returns the wait in ms.
 function takeSlot(q, minDelayMs) {
@@ -200,6 +203,9 @@ function kickNav(q, tabId, url) {
 
 function lease(q, url, tabId) {
   const item = q.items[url];
+  // Every tab that ever worked this run: tabs they open are closed (see tabs.onCreated).
+  q.ownTabs = q.ownTabs || [];
+  if (!q.ownTabs.includes(tabId)) q.ownTabs.push(tabId);
   delete item.navDelayMs;
   delete item.navAt;
   item.state = "leased";
@@ -337,6 +343,24 @@ function botCheckShownInPage() {
   return !!document.querySelector('iframe[src*="captcha-delivery.com"], #ddChallengeBody');
 }
 
+// Runs in the profile page's MAIN world — CKEditor lives there, not in the content
+// script's isolated world. SR's notes editor is CKEditor 4, whose writer puts "\n" after
+// every <br> in getData(); SR turns each "\n" into another <br>, so every note line was
+// double-spaced. Dropping that newline keeps keyword notes compact. Returns the number
+// of editors changed.
+function compactNoteBreaksInPage() {
+  const C = window.CKEDITOR;
+  if (!C || !C.instances) return 0;
+  let n = 0;
+  for (const ed of Object.values(C.instances)) {
+    try {
+      ed.dataProcessor.writer.setRules("br", { breakAfterOpen: false, breakAfterClose: false });
+      n++;
+    } catch (_) {}
+  }
+  return n;
+}
+
 async function botCheckStillShown(tabId) {
   try {
     const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: botCheckShownInPage });
@@ -386,25 +410,69 @@ function recordOutcome(ctx, result) {
 
 const closeTab = (tabId) => { if (tabId != null) chrome.tabs.remove(tabId).catch(() => {}); };
 
-// Open a new worker tab for the next pending URL, if a slot is free.
+// Tab launches holding a pace slot but not yet opened (times, persisted). They count
+// toward q.workers so a free worker isn't launched twice. An entry well past its time
+// is a timer lost to a service-worker restart, so it stops counting.
+const LAUNCH_RESERVATION_GRACE_MS = 30000;
+function launchesPending(q) {
+  const cutoff = Date.now() - LAUNCH_RESERVATION_GRACE_MS;
+  q.launchAt = (q.launchAt || []).filter((t) => t > cutoff);
+  return q.launchAt.length;
+}
+
+// Reserve a pace slot for a new worker tab, then open it when the slot comes up.
+// The slot is reserved up front like a reused tab's navigation (scheduleNav): a launch
+// that only re-checked the clock lost every slot to busy reused tabs, so the last
+// worker of a 3× run never opened.
 function launchWorker() {
+  return withQueue((ctx) => {
+    const q = ctx.q;
+    if (!q || q.stopped || q.pausedSince) return;
+    if (countIn(q, "leased") + launchesPending(q) >= q.workers) return;
+    if (!nextPending(q)) { finishIfDrained(ctx); return; }
+    const wait = takeSlot(q, 0);
+    const at = Date.now() + wait;
+    q.launchAt.push(at);
+    setTimeout(() => openWorkerTab(at), wait);
+  });
+}
+
+function openWorkerTab(at) {
   return withQueue(async (ctx) => {
     const q = ctx.q;
-    if (!q || q.stopped || q.pausedSince || countIn(q, "leased") >= q.workers) return;
+    if (!q) return;
+    const i = (q.launchAt || []).indexOf(at);
+    if (i < 0) return; // run restarted or reservation expired
+    q.launchAt.splice(i, 1);
+    if (q.stopped || q.pausedSince || countIn(q, "leased") >= q.workers) return;
     const url = nextPending(q);
     if (!url) { finishIfDrained(ctx); return; }
-    const wait = (q.nextSlotAt || 0) - Date.now();
-    if (wait > 0) { setTimeout(launchWorker, wait); return; }
-    q.nextSlotAt = Date.now() + jitter(paceMs(q));
     let tab;
     try {
-      tab = await chrome.tabs.create({ url, active: false });
+      tab = await createWorkerTab(q, url);
     } catch (_) {
       setTimeout(launchWorker, jitter(1600));
       return;
     }
     lease(q, url, tab.id);
   });
+}
+
+// Worker tabs live in their own unfocused window (q.workerWindowId), so activating one
+// to render a resume never switches the tab the recruiter is on, and their clicking
+// around in other windows never lands on a worker. Falls back to a background tab in
+// the current window if a window can't be opened.
+async function createWorkerTab(q, url) {
+  if (q.workerWindowId != null) {
+    try { return await chrome.tabs.create({ windowId: q.workerWindowId, url, active: false }); }
+    catch (_) { q.workerWindowId = null; } // the recruiter closed the worker window
+  }
+  try {
+    const win = await chrome.windows.create({ url, focused: false, type: "normal" });
+    const tab = win && win.tabs && win.tabs[0];
+    if (tab) { q.workerWindowId = win.id; return tab; }
+  } catch (_) {}
+  return chrome.tabs.create({ url, active: false });
 }
 
 // Schedule launches for free worker slots (e.g. after a timeout or closed tab).
@@ -428,11 +496,28 @@ function navigateWorker(tabId, url) {
   });
 }
 
+// A finished run's worker tabs, kept briefly: a resume tab can open just after its
+// worker finished (slow attachment click), and would otherwise outlive the run.
+const RECENT_WORKER_TABS_KEY = "srRecentWorkerTabs";
+const RECENT_WORKER_TABS_MS = 2 * 60 * 1000;
+
+// Close every tab this run's workers opened that is still around, and remember the
+// worker tabs for RECENT_WORKER_TABS_MS (see tabs.onCreated).
+function sweepRunTabs(q) {
+  const own = q.ownTabs || [];
+  if (!own.length) return;
+  chrome.storage.session.set({ [RECENT_WORKER_TABS_KEY]: { tabIds: own, until: Date.now() + RECENT_WORKER_TABS_MS } }).catch(() => {});
+  chrome.tabs.query({}).then((all) => {
+    for (const t of all || []) if (t.openerTabId != null && own.includes(t.openerTabId)) closeTab(t.id);
+  }).catch(() => {});
+}
+
 // Drop the current run without saving results (a new run replaced it, or it went stale).
 function abandonQueue(ctx) {
   const q = ctx.q;
   if (!q) return;
   for (const url of q.order) if (q.items[url].state === "leased") closeTab(q.items[url].tabId);
+  sweepRunTabs(q);
   ctx.q = null;
   chrome.alarms.clear(WATCHDOG_ALARM).catch(() => {});
 }
@@ -493,6 +578,7 @@ function finishIfDrained(ctx, { stopped = false } = {}) {
   }
   playBeepInSRTab(q.returnUrl || "");
   pruneProfileDiags();
+  sweepRunTabs(q);
   ctx.q = null;
   chrome.alarms.clear(WATCHDOG_ALARM).catch(() => {});
   return true;
@@ -520,7 +606,7 @@ function startQueue(feature, message) {
     const urls = [...new Set(message.urls || [])];
     const workers = Math.max(1, Math.min(5, message.workers || 2));
     const ppm = Number(message.profilesPerMinute);
-    const profilesPerMinute = Number.isFinite(ppm) && ppm > 0 ? Math.min(30, ppm) : DEFAULT_PROFILES_PER_MINUTE;
+    const profilesPerMinute = Number.isFinite(ppm) && ppm > 0 ? Math.min(30, ppm) : defaultPace(workers);
     ctx.q = {
       runId: "r" + Date.now(),
       feature,
@@ -665,40 +751,85 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // focus hands off directly between workers so the user's tab isn't bounced each pass.
 const resumeFocus = {
   holder: null,     // tabId currently foregrounded for resume rendering
-  userTabId: null,  // the user's tab to restore once no worker needs focus
+  restore: null,    // what to give back once no worker needs focus (see showTabForRender)
   queue: [],        // pending [{ tabId, resolve }]
   timer: null,      // safety auto-release (content script may never send release)
 };
 
-function _grantResumeFocus(tabId) {
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function tabIsVisible(tabId) {
+  try {
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => document.visibilityState === "visible",
+    });
+    return !!(r && r.result);
+  } catch (_) {
+    return false;
+  }
+}
+
+// Get a tab on screen so pdf.js renders, disturbing the recruiter as little as possible:
+// 1. Activate it inside its own window. In the worker window that touches nothing of
+//    theirs; in their window (fallback, no worker window) note their tab to give back.
+// 2. Only if the page is still hidden (window covered or behind others), raise its
+//    window, noting the window they were in.
+// Returns { windowId, raisedFrom, priorTabId } for giveFocusBack.
+async function showTabForRender(tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab) return null;
+  const out = { windowId: tab.windowId, tabId, raisedFrom: null, priorTabId: null };
+  if (!tab.active) {
+    const [prior] = await chrome.tabs.query({ active: true, windowId: tab.windowId }).catch(() => []);
+    if (prior && !isWorkerTab(prior.id) && prior.id !== tabId) out.priorTabId = prior.id;
+    await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+    await _sleep(150);
+  }
+  if (!(await tabIsVisible(tabId))) {
+    const focused = await chrome.windows.getLastFocused().catch(() => null);
+    if (focused && focused.id !== tab.windowId) out.raisedFrom = focused.id;
+    await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  }
+  return out;
+}
+
+// Undo showTabForRender, but only what still looks like ours: if the recruiter has
+// since switched tab or window themselves, leave them where they are.
+async function giveFocusBack(r) {
+  if (!r) return;
+  if (r.priorTabId != null) {
+    const [active] = await chrome.tabs.query({ active: true, windowId: r.windowId }).catch(() => []);
+    if (!active || active.id === r.tabId || isWorkerTab(active.id)) {
+      chrome.tabs.update(r.priorTabId, { active: true }).catch(() => {});
+    }
+  }
+  if (r.raisedFrom != null) {
+    const focused = await chrome.windows.getLastFocused().catch(() => null);
+    if (!focused || focused.id === r.windowId) chrome.windows.update(r.raisedFrom, { focused: true }).catch(() => {});
+  }
+}
+
+async function _grantResumeFocus(tabId) {
   resumeFocus.holder = tabId;
-  chrome.tabs.get(tabId, (tab) => {
-    if (chrome.runtime.lastError || !tab) return;
-    chrome.tabs.update(tabId, { active: true }).catch(() => {});
-    // The window must also be focused for visibilityState to become "visible".
-    chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
-  });
   clearTimeout(resumeFocus.timer);
   resumeFocus.timer = setTimeout(() => releaseResumeFocus(tabId), 25000);
+  const r = await showTabForRender(tabId);
+  // Focus hands off between workers: keep the first thing to give back to the recruiter.
+  if (r && (r.priorTabId != null || r.raisedFrom != null)) {
+    const keep = resumeFocus.restore;
+    if (!keep) resumeFocus.restore = r;
+    else {
+      if (keep.priorTabId == null && r.priorTabId != null) { keep.priorTabId = r.priorTabId; keep.windowId = r.windowId; keep.tabId = r.tabId; }
+      if (keep.raisedFrom == null) keep.raisedFrom = r.raisedFrom;
+    }
+  }
 }
 
 function acquireResumeFocus(tabId) {
-  return new Promise((resolve) => {
-    if (resumeFocus.holder === tabId) { resolve(); return; }
-    if (resumeFocus.holder != null) { resumeFocus.queue.push({ tabId, resolve }); return; }
-    // First steal — remember the user's (non-worker) tab so we can restore it later.
-    if (resumeFocus.userTabId == null) {
-      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-        const t = tabs && tabs[0];
-        if (t && !isWorkerTab(t.id)) resumeFocus.userTabId = t.id;
-        _grantResumeFocus(tabId);
-        resolve();
-      });
-      return;
-    }
-    _grantResumeFocus(tabId);
-    resolve();
-  });
+  if (resumeFocus.holder === tabId) return Promise.resolve();
+  if (resumeFocus.holder != null) return new Promise((resolve) => resumeFocus.queue.push({ tabId, resolve }));
+  return _grantResumeFocus(tabId);
 }
 
 function releaseResumeFocus(tabId) {
@@ -711,12 +842,12 @@ function releaseResumeFocus(tabId) {
   resumeFocus.holder = null;
   const next = resumeFocus.queue.shift();
   if (next) {
-    _grantResumeFocus(next.tabId);
-    next.resolve();
-  } else if (resumeFocus.userTabId != null) {
-    // Nobody waiting — restore the user's tab.
-    chrome.tabs.update(resumeFocus.userTabId, { active: true }).catch(() => {});
-    resumeFocus.userTabId = null;
+    _grantResumeFocus(next.tabId).then(next.resolve);
+  } else {
+    // Nobody waiting — give the recruiter back their tab/window.
+    const r = resumeFocus.restore;
+    resumeFocus.restore = null;
+    giveFocusBack(r);
   }
 }
 
@@ -727,7 +858,7 @@ function releaseResumeFocus(tabId) {
 // that tab (by openerTabId), foregrounds it so pdf.js renders, extracts the text via
 // chrome.scripting, closes it, and hands the text back to the worker.
 const resumeCapture = {
-  pending: new Map(), // workerTabId -> { armedAt, priorActiveTabId }
+  pending: new Map(), // workerTabId -> { armedAt, opened }
   results: new Map(), // workerTabId -> { done, text }
 };
 
@@ -756,8 +887,8 @@ function _extractResumeTextInPage() {
 }
 
 async function captureResumeFromTab(workerTabId, resumeTabId) {
-  const info = resumeCapture.pending.get(workerTabId) || {};
   let text = "";
+  let shown = null;
   try {
     // Wait for the resume tab to finish loading.
     await new Promise((resolve) => {
@@ -768,11 +899,10 @@ async function captureResumeFromTab(workerTabId, resumeTabId) {
       chrome.tabs.onUpdated.addListener(onUpd);
       chrome.tabs.get(resumeTabId, (t) => { if (!chrome.runtime.lastError && t && t.status === "complete") finish(); });
     });
-    // Foreground so pdf.js renders, then give it time to paint the text layer.
-    await chrome.tabs.update(resumeTabId, { active: true }).catch(() => {});
-    const rt = await chrome.tabs.get(resumeTabId).catch(() => null);
-    if (rt) await chrome.windows.update(rt.windowId, { focused: true }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 6000));
+    // On screen so pdf.js renders (its window is raised only if it stays hidden), then
+    // give it time to paint the text layer.
+    shown = await showTabForRender(resumeTabId);
+    await _sleep(6000);
     let results = [];
     try {
       results = await chrome.scripting.executeScript({
@@ -783,7 +913,9 @@ async function captureResumeFromTab(workerTabId, resumeTabId) {
     for (const r of results || []) { if (r && r.result && r.result.length > text.length) text = r.result; }
   } catch (_) {}
   try { await chrome.tabs.remove(resumeTabId); } catch (_) {}
-  if (info.priorActiveTabId != null) chrome.tabs.update(info.priorActiveTabId, { active: true }).catch(() => {});
+  // The resume tab opened next to its worker; the worker's own focus (if it holds it)
+  // is restored by releaseResumeFocus, so only undo what showing this tab did.
+  if (shown) { shown.priorTabId = null; giveFocusBack(shown); }
   resumeCapture.results.set(workerTabId, { done: true, text: text });
   resumeCapture.pending.delete(workerTabId);
 }
@@ -792,14 +924,22 @@ chrome.tabs.onCreated.addListener((tab) => {
   const opener = tab.openerTabId;
   if (opener == null) return;
   if (resumeCapture.pending.has(opener)) {
+    resumeCapture.pending.get(opener).opened = true;
     captureResumeFromTab(opener, tab.id);
     return;
   }
   // Any other tab a parallel worker opens (e.g. a resume-tab click that hit the
   // attachment link) is a side effect nobody will look at — close it, or recruiters
-  // are left with a pile of "latest-resume" tabs. Only worker tabs: never a tab
-  // opened from the recruiter's own tabs. Via withQueue so it holds after an SW restart.
-  withQueue((ctx) => { if (leaseOf(ctx.q, opener)) closeTab(tab.id); });
+  // are left with a pile of "latest-resume" tabs. Any tab that worked this run counts,
+  // not just one holding a lease: the tab can open after its worker finished, or just
+  // after the run ended. Never a tab opened from the recruiter's own tabs. Via
+  // withQueue so it holds after an SW restart.
+  withQueue(async (ctx) => {
+    if (ctx.q && (ctx.q.ownTabs || []).includes(opener)) { closeTab(tab.id); return; }
+    const got = await chrome.storage.session.get(RECENT_WORKER_TABS_KEY).catch(() => ({}));
+    const recent = got && got[RECENT_WORKER_TABS_KEY];
+    if (recent && recent.until > Date.now() && recent.tabIds.includes(opener)) closeTab(tab.id);
+  });
 });
 
 // ── Message handler ──
@@ -820,17 +960,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "srArmResumeCapture") {
     const tabId = sender.tab && sender.tab.id;
     if (tabId == null) { sendResponse({ ok: false }); return; }
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-      const prior = tabs && tabs[0] ? tabs[0].id : null;
-      resumeCapture.pending.set(tabId, { armedAt: Date.now(), priorActiveTabId: prior });
-      resumeCapture.results.delete(tabId);
-      // Expire a stale arm if the expected tab never opened.
-      setTimeout(() => {
-        const p = resumeCapture.pending.get(tabId);
-        if (p && Date.now() - p.armedAt >= 14000) resumeCapture.pending.delete(tabId);
-      }, 15000);
-      sendResponse({ ok: true });
-    });
+    resumeCapture.pending.set(tabId, { armedAt: Date.now() });
+    resumeCapture.results.delete(tabId);
+    // Expire a stale arm if the expected tab never opened.
+    setTimeout(() => {
+      const p = resumeCapture.pending.get(tabId);
+      if (p && Date.now() - p.armedAt >= 14000) resumeCapture.pending.delete(tabId);
+    }, 15000);
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -838,7 +975,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab && sender.tab.id;
     const res = tabId != null ? resumeCapture.results.get(tabId) : null;
     if (res && res.done) { resumeCapture.results.delete(tabId); sendResponse({ done: true, text: res.text }); }
-    else sendResponse({ done: false });
+    else {
+      const p = tabId != null ? resumeCapture.pending.get(tabId) : null;
+      sendResponse({ done: false, opened: !!(p && p.opened) });
+    }
     return true;
   }
 
@@ -853,6 +993,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab && sender.tab.id;
     if (tabId != null) releaseResumeFocus(tabId);
     sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.type === "srCompactNoteBreaks") {
+    const tabId = sender.tab && sender.tab.id;
+    if (tabId == null) { sendResponse({ ok: false }); return; }
+    const target = { tabId };
+    if (sender.frameId != null) target.frameIds = [sender.frameId];
+    chrome.scripting.executeScript({ target, world: "MAIN", func: compactNoteBreaksInPage })
+      .then((res) => {
+        const editors = (res && res[0] && res[0].result) || 0;
+        sendResponse({ ok: editors > 0, editors });
+      })
+      .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
     return true;
   }
 

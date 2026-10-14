@@ -386,6 +386,18 @@ describe('background parallel queue: tabs opened by worker tabs', () => {
     assertCleanRun(ctx);
   });
 
+  it('resume capture polls report whether the fallback click actually opened a tab', async () => {
+    const ctx = setup({ n: 2, workers: 1,
+      behaviour: (u) => ({ workMs: 20 * SEC, report: kwReport(u),
+        opensTab: u === ctx.urls[0] ? 'fallback' : 'fallback-no-tab' }) });
+    await ctx.start();
+    assert.ok(await ctx.browser.runUntil(ctx.finished, 10 * MIN), 'run did not finish');
+    const seen = (u) => ctx.browser.pageLog.filter((p) => p.url === u && p.what.startsWith('capture-')).map((p) => p.what);
+    assert.deepEqual(seen(ctx.urls[0]), ['capture-opened']);
+    assert.deepEqual(seen(ctx.urls[1]), ['capture-not-opened']);
+    assertCleanRun(ctx);
+  });
+
   it("never closes a tab the recruiter opens from their own tab during a run", async () => {
     const ctx = setup({ n: 3, workers: 2, behaviour: normal(20 * SEC) });
     const own = ctx.browser.openTabFrom(undefined, 'https://www.smartrecruiters.com/app/jobs/123');
@@ -684,19 +696,34 @@ describe('background parallel queue: pace limit', () => {
   const profileLoads = (ctx) => ctx.browser.events.filter((e) => e[0] === 'nav' && /\/profile\/c\d+$/.test(e[2])).map((e) => e[3]);
   const gaps = (ts) => ts.slice(1).map((t, i) => t - ts[i]);
 
-  it('3 fast workers stay at the default 6 profiles a minute', async () => {
-    const ctx = setup({ n: 12, workers: 3, behaviour: normal(2 * SEC), profilesPerMinute: null });
-    const resp = await ctx.start();
-    assert.equal(resp.profilesPerMinute, 6);
-    assert.ok(await ctx.browser.runUntil(ctx.finished, 10 * MIN), 'run did not finish');
+  // Default pace is 3 a minute per worker: 2× = 6/min (the 2.5.0 rate), 3× = 9/min.
+  for (const [workers, ppm, minGap] of [[2, 6, 6500], [3, 9, 4300]]) {
+    it(`${workers} fast workers stay at the default ${ppm} profiles a minute`, async () => {
+      const ctx = setup({ n: 12, workers, behaviour: normal(2 * SEC), profilesPerMinute: null });
+      const resp = await ctx.start();
+      assert.equal(resp.profilesPerMinute, ppm);
+      assert.ok(await ctx.browser.runUntil(ctx.finished, 10 * MIN), 'run did not finish');
+      await ctx.browser.advance(1 * MIN);
+      assertCleanRun(ctx);
+      const loads = profileLoads(ctx);
+      assert.equal(loads.length, 12, 'each profile loaded once');
+      // 60/ppm s per slot, jittered ±35%.
+      for (const g of gaps(loads)) assert.ok(g >= minGap, `two profile loads only ${g}ms apart`);
+      const perMin = (loads.length - 1) / ((loads.at(-1) - loads[0]) / MIN);
+      assert.ok(perMin <= ppm + 1, `ran at ${perMin.toFixed(1)} profiles/min`);
+    });
+  }
+
+  it('3× really opens 3 worker tabs even when busy tabs want every slot', async () => {
+    // Fast (8s) profiles: two reused tabs claim every pace slot as soon as they finish,
+    // which used to starve the third launch for the whole run (2.5.0 opened only 2 tabs).
+    const ctx = setup({ n: 15, workers: 3, behaviour: normal(8 * SEC), profilesPerMinute: 6 });
+    await ctx.start();
+    assert.ok(await ctx.browser.runUntil(ctx.finished, 20 * MIN), 'run did not finish');
     await ctx.browser.advance(1 * MIN);
     assertCleanRun(ctx);
-    const loads = profileLoads(ctx);
-    assert.equal(loads.length, 12, 'each profile loaded once');
-    // 10s per slot, jittered ±35%.
-    for (const g of gaps(loads)) assert.ok(g >= 6500, `two profile loads only ${g}ms apart`);
-    const perMin = (loads.length - 1) / ((loads.at(-1) - loads[0]) / MIN);
-    assert.ok(perMin <= 7, `ran at ${perMin.toFixed(1)} profiles/min`);
+    assert.equal(ctx.browser.events.filter((e) => e[0] === 'tab-create').length, 3, 'expected 3 worker tabs');
+    for (const u of ctx.urls) assert.equal(ctx.visits(u), 1, `${u} loaded more than once`);
   });
 
   it('honours the popup pace, capped at 30 a minute', async () => {
@@ -793,5 +820,100 @@ describe('background parallel queue: bot check mid-run', () => {
     assert.ok(await ctx.browser.runUntil(ctx.finished, 20 * MIN), 'run did not finish after the check was solved');
     await ctx.browser.advance(1 * MIN);
     assertCleanRun(ctx);
+  });
+});
+
+// Worker tabs must not interfere with the recruiter: they live in their own window, a
+// resume render never switches the recruiter's tab, and focus comes back afterwards.
+describe('background parallel queue: worker window and focus', () => {
+  const focusing = (workMs) => (u) => ({ workMs, focus: true, report: kwReport(u) });
+
+  it('opens workers in one separate window and never switches the recruiter\'s tab', async () => {
+    const ctx = setup({ n: 6, workers: 3, behaviour: focusing(6 * SEC) });
+    const userTab = ctx.browser.openUserTab('https://jobs.smartrecruiters.com/app/jobs/123');
+    await ctx.start();
+    assert.ok(await ctx.browser.runUntil(ctx.finished, 10 * MIN), 'run did not finish');
+    await ctx.browser.advance(1 * MIN);
+    assertCleanRun(ctx);
+    const ev = ctx.browser.events;
+    assert.equal(ev.filter((e) => e[0] === 'window-create').length, 1, 'one worker window');
+    assert.ok(ev.filter((e) => e[0] === 'window-create').every((e) => e[2] === false), 'created unfocused');
+    assert.equal(ev.filter((e) => e[0] === 'tab-activate' && e[2] === 1).length, 0, 'a tab in the recruiter\'s window was switched');
+    assert.equal(ctx.browser.tabs.get(userTab).active, true);
+    // Every resume render got a visible page (the window was raised when covered)...
+    const renders = ctx.browser.pageLog.filter((p) => p.what.startsWith('focus-'));
+    assert.equal(renders.length, 6);
+    assert.ok(renders.every((p) => p.what === 'focus-visible'), 'a resume rendered hidden');
+    // ...and the recruiter got their window back.
+    assert.equal(ctx.browser.focusedWindowId, 1);
+  });
+
+  it('leaves the recruiter where they are if they switched windows meanwhile', async () => {
+    const ctx = setup({ n: 1, workers: 1, behaviour: focusing(10 * SEC) });
+    ctx.browser.openUserTab('https://jobs.smartrecruiters.com/app/jobs/123');
+    await ctx.start();
+    assert.ok(await ctx.browser.runUntil(() => ctx.browser.pageLog.some((p) => p.what === 'focus-visible'), 1 * MIN, 50));
+    ctx.browser.userFocusWindow(77); // they clicked into another Chrome window
+    assert.ok(await ctx.browser.runUntil(ctx.finished, 2 * MIN), 'run did not finish');
+    assert.equal(ctx.browser.focusedWindowId, 77, 'focus was pulled away from the window they chose');
+  });
+
+  it('closes a resume tab its worker opens after finishing, mid-run or after the run', async () => {
+    const ctx = setup({ n: 3, workers: 2, behaviour: normal(5 * SEC) });
+    await ctx.start();
+    // The first worker to run out of URLs is closed while the other still works.
+    assert.ok(await ctx.browser.runUntil(() => ctx.browser.events.some((e) => e[0] === 'tab-remove'), 2 * MIN, 50));
+    const early = ctx.browser.events.find((e) => e[0] === 'tab-remove')[1];
+    const late1 = ctx.browser.openTabFrom(early, RESUME_TAB_URL);
+    assert.ok(await ctx.browser.runUntil(ctx.finished, 2 * MIN), 'run did not finish');
+    await ctx.browser.advance(2 * SEC);
+    const workers = [...new Set(ctx.browser.events.filter((e) => e[0] === 'nav' && /profile/.test(e[2])).map((e) => e[1]))];
+    const late2 = ctx.browser.openTabFrom(workers[workers.length - 1], RESUME_TAB_URL);
+    // A tab the recruiter opens from their own tab is never touched.
+    const userTab = ctx.browser.openUserTab('https://jobs.smartrecruiters.com/app/jobs/123');
+    const theirs = ctx.browser.openTabFrom(userTab, RESUME_TAB_URL);
+    await ctx.browser.advance(5 * SEC);
+    assert.equal(ctx.browser.tabs.has(late1), false, 'resume tab from a finished worker left open');
+    assert.equal(ctx.browser.tabs.has(late2), false, 'resume tab opened just after the run left open');
+    assert.equal(ctx.browser.tabs.has(theirs), true, 'closed a tab the recruiter opened');
+  });
+
+  it('a stray resume tab during a run is closed, even after a service-worker restart', async () => {
+    let first = true;
+    const ctx = setup({ n: 2, workers: 1, behaviour: (u) => (first ? ((first = false), { workMs: 8 * SEC, opensTab: 'stray', report: kwReport(u) }) : normal(3 * SEC)(u)) });
+    await ctx.start();
+    assert.ok(await ctx.browser.runUntil(() => ctx.browser.events.some((e) => e[0] === 'tab-open'), 1 * MIN, 50));
+    ctx.browser.killSW();
+    assert.ok(await ctx.browser.runUntil(ctx.finished, 5 * MIN), 'run did not finish');
+    await ctx.browser.advance(5 * SEC);
+    const opened = ctx.browser.events.filter((e) => e[0] === 'tab-open').map((e) => e[1]);
+    for (const id of opened) assert.equal(ctx.browser.tabs.has(id), false, 'stray resume tab left open');
+  });
+});
+
+describe('notes editor line breaks', () => {
+  // SR's notes editor is CKEditor 4: its writer adds "\n" after every <br>, which SR
+  // turns into a second <br>, double-spacing each note line. The background switches
+  // that newline off in the page's MAIN world, in the frame that asked.
+  const fakeEditor = () => {
+    const rules = [];
+    return { rules, dataProcessor: { writer: { setRules: (tag, r) => rules.push([tag, r]) } } };
+  };
+
+  it('turns off the newline after <br> in every CKEditor instance of the asking frame', async () => {
+    const ed = fakeEditor();
+    const targets = [];
+    const browser = createBrowser({ mainWorld: (t) => (targets.push(t), { CKEDITOR: { instances: { notes: ed } } }) });
+    const resp = await browser.sendFromTab(7, { type: 'srCompactNoteBreaks' }, 3);
+    assert.deepEqual(resp, { ok: true, editors: 1 });
+    // Objects built inside the page's vm context: compare as JSON (different realm).
+    assert.equal(JSON.stringify(ed.rules), JSON.stringify([['br', { breakAfterOpen: false, breakAfterClose: false }]]));
+    assert.deepEqual(JSON.parse(JSON.stringify(targets)), [{ tabId: 7, frameIds: [3] }]);
+  });
+
+  it('reports not-ok when the page has no CKEditor, and ignores non-tab senders', async () => {
+    const browser = createBrowser({ mainWorld: () => ({}) });
+    assert.deepEqual(await browser.sendFromTab(7, { type: 'srCompactNoteBreaks' }), { ok: false, editors: 0 });
+    assert.deepEqual(await browser.sendFromPopup({ type: 'srCompactNoteBreaks' }), { ok: false });
   });
 });

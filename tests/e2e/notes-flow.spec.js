@@ -10,6 +10,8 @@ const ROOT = path.resolve(__dirname, "../..");
 
 async function injectExtensionScripts(page) {
   await page.addScriptTag({ path: path.join(ROOT, "keyword-expansions.js") });
+  await page.addScriptTag({ path: path.join(ROOT, "location-gazetteer.js") });
+  await page.addScriptTag({ path: path.join(ROOT, "location-infer.js") });
   await page.addScriptTag({ path: path.join(ROOT, "keyword-triage-core.js") });
   await page.addScriptTag({ path: path.join(ROOT, "sr-selectors.js") });
 }
@@ -287,4 +289,34 @@ test("Move Forward control is present", async ({ page }) => {
 
   expect(found).not.toBeNull();
   expect(found.text).toContain("move forward");
+});
+
+// ── ensureResumeTabActive: never click a link that opens the resume in a new tab ──
+// SR's "Latest Resume" attachment link also says "resume"; when the Resume tab wasn't
+// found first, clicking it opened a tab that was never closed.
+
+test("resume-tab search skips the Latest Resume attachment link", async ({ page }) => {
+  await page.goto(FIXTURE, { waitUntil: "domcontentloaded" });
+  await injectExtensionScripts(page);
+
+  const clicked = await page.evaluate(async () => {
+    const view = document.querySelector("#st-candidateView") || document.body;
+    // Like live SR: the real tab isn't reachable as role=tab, and the attachment
+    // link comes earlier in the page than a "Resume" button.
+    document.querySelector("#st-resume").removeAttribute("role");
+    const link = document.createElement("a");
+    link.href = "/app/people/attachments/123/latest-resume";
+    link.target = "_blank";
+    link.textContent = "Latest Resume";
+    const btn = document.createElement("button");
+    btn.textContent = "Resume";
+    view.prepend(btn);
+    view.prepend(link);
+    const hits = [];
+    link.addEventListener("click", (e) => { e.preventDefault(); hits.push("link"); });
+    btn.addEventListener("click", () => hits.push("button"));
+    await window.__srEnsureResumeTabActive();
+    return hits;
+  });
+  expect(clicked).toEqual(["button"]);
 });

@@ -31,6 +31,11 @@ function createBrowser(opts = {}) {
   const pageLog = [];              // { tabId, url, what, at } recorded by page scripts
   const events = [];               // trace, handy when a test fails
   let nextTabId = 100;
+  // Windows: 1 is the recruiter's. A page is visible only when its tab is active and
+  // its window is focused — the worst case, where any other window covers it.
+  let nextWindowId = 2;
+  const windowIds = new Set([1]);
+  let focusedWindowId = 1;
   let timerSeq = 0;
   let alarmSeq = 0;
   let swGen = 0;
@@ -119,6 +124,7 @@ function createBrowser(opts = {}) {
       url,
       sendMessage: (message) => sendToSW(message, { tab: { id: t.id, url } }),
       botCheck: () => !!t.botCheck,
+      visible: () => t.active && t.windowId === focusedWindowId,
       // Resolves only if the page is still alive; a navigated-away page just stops.
       sleep: (ms) => new Promise((r) => addTimer(owner, ms, r)),
       record: (what) => pageLog.push({ tabId: t.id, url, what, at: clock.now }),
@@ -129,7 +135,10 @@ function createBrowser(opts = {}) {
 
   // A tab opened by page content, not by the extension (fires tabs.onCreated).
   function openTabFrom(openerTabId, tabUrl) {
-    const t = { id: nextTabId++, url: 'about:blank', active: true, windowId: 1, status: 'loading', navSeq: 0, openerTabId };
+    const opener = tabs.get(openerTabId);
+    const windowId = opener ? opener.windowId : 1;
+    for (const o of tabs.values()) if (o.windowId === windowId) o.active = false;
+    const t = { id: nextTabId++, url: 'about:blank', active: true, windowId, status: 'loading', navSeq: 0, openerTabId };
     tabs.set(t.id, t);
     events.push(['tab-open', t.id, tabUrl, openerTabId, clock.now]);
     navigate(t, tabUrl);
@@ -188,8 +197,10 @@ function createBrowser(opts = {}) {
       storage: { local: area('local'), session: area('session') },
       tabs: {
         create(props, cb) {
+          const windowId = props.windowId ?? 1;
+          if (!windowIds.has(windowId)) return withCb(Promise.reject(new Error('No window with id: ' + windowId + '.')), cb);
           const t = {
-            id: nextTabId++, url: 'about:blank', active: !!props.active, windowId: 1,
+            id: nextTabId++, url: 'about:blank', active: !!props.active, windowId,
             status: 'loading', navSeq: 0, openerTabId: props.openerTabId,
           };
           tabs.set(t.id, t);
@@ -202,7 +213,13 @@ function createBrowser(opts = {}) {
           const t = tabs.get(id);
           if (!t) return withCb(noTab(id), cb);
           if (props.url) navigate(t, props.url);
-          if ('active' in props) t.active = !!props.active;
+          if ('active' in props) {
+            if (props.active) {
+              for (const o of tabs.values()) if (o.windowId === t.windowId) o.active = false;
+              events.push(['tab-activate', id, t.windowId, clock.now]);
+            }
+            t.active = !!props.active;
+          }
           return withCb(Promise.resolve(pubTab(t)), cb);
         },
         remove(ids, cb) {
@@ -221,23 +238,52 @@ function createBrowser(opts = {}) {
         query(q, cb) {
           let list = [...tabs.values()];
           if (q && q.active) list = list.filter((t) => t.active);
+          if (q && q.windowId != null) list = list.filter((t) => t.windowId === q.windowId);
           return withCb(Promise.resolve(list.map(pubTab)), cb);
         },
         onCreated: makeEvent(listeners.tabCreated),
         onRemoved: makeEvent(listeners.tabRemoved),
         onUpdated: makeEvent(listeners.tabUpdated),
       },
-      windows: { update: () => Promise.resolve({}) },
+      windows: {
+        create(props = {}) {
+          const id = nextWindowId++;
+          windowIds.add(id);
+          events.push(['window-create', id, !!props.focused, clock.now]);
+          if (props.focused) focusedWindowId = id;
+          const t = { id: nextTabId++, url: 'about:blank', active: true, windowId: id, status: 'loading', navSeq: 0 };
+          tabs.set(t.id, t);
+          events.push(['tab-create', t.id, props.url, clock.now]);
+          if (props.url) navigate(t, props.url);
+          addTimer(BROWSER, 0, () => fireSW('tabCreated', [pubTab(t)]));
+          return Promise.resolve({ id, focused: !!props.focused, tabs: [pubTab(t)] });
+        },
+        update(id, props = {}) {
+          if (!windowIds.has(id)) return Promise.reject(new Error('No window with id: ' + id + '.'));
+          if (props.focused) { focusedWindowId = id; events.push(['window-focus', id, clock.now]); }
+          return Promise.resolve({ id, focused: focusedWindowId === id });
+        },
+        getLastFocused() { return Promise.resolve({ id: focusedWindowId, focused: true }); },
+      },
       notifications: {
         create(id, options) { notifications.push({ id, ...clone(options), at: clock.now }); },
       },
       scripting: {
         executeScript(inj) {
           events.push(['exec', inj.target.tabId, clock.now]);
+          // MAIN-world injections run against the page's own globals (opts.mainWorld(target)).
+          if (inj.world === 'MAIN') {
+            const win = (opts.mainWorld && opts.mainWorld(inj.target)) || {};
+            return Promise.resolve([{ result: vm.runInNewContext('(' + inj.func + ')()', { window: win }) }]);
+          }
           // The background's bot-check probe gets the tab's challenge state.
           if (inj.func && /captcha-delivery/.test(String(inj.func))) {
             const t = tabs.get(inj.target.tabId);
             return t ? Promise.resolve([{ result: !!t.botCheck }]) : noTab(inj.target.tabId);
+          }
+          if (inj.func && /visibilityState/.test(String(inj.func))) {
+            const t = tabs.get(inj.target.tabId);
+            return t ? Promise.resolve([{ result: t.active && t.windowId === focusedWindowId }]) : noTab(inj.target.tabId);
           }
           return Promise.resolve([]);
         },
@@ -389,13 +435,23 @@ function createBrowser(opts = {}) {
       t.botCheck = false;
       if (reload) navigate(t, t.url);
     },
+    // The recruiter's own tab in their window (1), active and focused, e.g. the job list.
+    openUserTab(url) {
+      for (const o of tabs.values()) if (o.windowId === 1) o.active = false;
+      const t = { id: nextTabId++, url, active: true, windowId: 1, status: 'complete', navSeq: 0 };
+      tabs.set(t.id, t);
+      focusedWindowId = 1;
+      return t.id;
+    },
+    userFocusWindow(id) { focusedWindowId = id; },
+    get focusedWindowId() { return focusedWindowId; },
     userCloseTab(id) {
       if (!tabs.delete(id)) return false;
       events.push(['tab-remove', id, clock.now, 'user']);
       addTimer(BROWSER, 0, () => fireSW('tabRemoved', [id, { isWindowClosing: false }]));
       return true;
     },
-    sendFromTab: (tabId, message) => sendToSW(message, { tab: { id: tabId, url: tabs.get(tabId)?.url } }),
+    sendFromTab: (tabId, message, frameId = 0) => sendToSW(message, { tab: { id: tabId, url: tabs.get(tabId)?.url }, frameId }),
     openTabFrom,
   };
 }
@@ -406,11 +462,14 @@ function createBrowser(opts = {}) {
 //
 // behaviour(url, visit) — visit counts 1, 2, ... per URL — returns 'hang' or
 //   { workMs, report: { ...srWorkerDone fields }, pingEveryMs? }
+// focus: true holds srRequestResumeFocus for the first half of the work.
 // pingEveryMs sends srGetResumeCapture while working, like a worker waiting on a
 // slow resume capture.
 // opensTab: 'stray' opens a resume tab without arming a capture (like a stray click on
 //   the attachment link); 'fallback' arms srArmResumeCapture first, as the real
 //   attachment fallback does. Either way the tab opens halfway through the work.
+//   'fallback-no-tab' arms but the click opens nothing (the link wasn't a viewable
+//   resume). Each records whether srGetResumeCapture then reports the tab as opened.
 const SIGN_IN_URL = 'https://www.smartrecruiters.com/account/sign-in';
 const RESUME_TAB_URL = 'https://www.smartrecruiters.com/app/attachments/latest-resume';
 
@@ -424,10 +483,21 @@ function workerPage({ feature = 'keyword', behaviour, reportTwice = false }) {
     visits.set(page.url, visit);
     const b = behaviour(page.url, visit);
     if (b === 'hang') { page.record('hang'); return; }
+    if (b.focus) {
+      // Resume render in a hidden tab: hold the focus lock for part of the work.
+      await page.sendMessage({ type: 'srRequestResumeFocus' });
+      page.record('focus-' + (page.visible() ? 'visible' : 'hidden'));
+      await page.sleep(b.workMs / 2);
+      await page.sendMessage({ type: 'srReleaseResumeFocus' });
+      b.workMs = b.workMs / 2;
+    }
     if (b.opensTab) {
       await page.sleep(b.workMs / 2);
-      if (b.opensTab === 'fallback') await page.sendMessage({ type: 'srArmResumeCapture' });
-      page.openTab(RESUME_TAB_URL);
+      if (b.opensTab !== 'stray') await page.sendMessage({ type: 'srArmResumeCapture' });
+      if (b.opensTab !== 'fallback-no-tab') page.openTab(RESUME_TAB_URL);
+      await page.sleep(1000);
+      const poll = await page.sendMessage({ type: 'srGetResumeCapture' });
+      page.record(poll && poll.opened ? 'capture-opened' : 'capture-not-opened');
       b.workMs = b.workMs / 2;
     }
     if (b.pingEveryMs) {

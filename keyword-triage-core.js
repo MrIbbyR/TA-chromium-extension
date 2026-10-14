@@ -620,6 +620,30 @@
   }
 
   /**
+   * Ask the background to switch off CKEditor's newline after <br> in the notes
+   * editor — the editor lives in the page's MAIN world, which this content script
+   * can't reach. SR turns that newline into a second <br>, double-spacing every
+   * note line. Resolves { ok, editors } or null when unavailable (Node tests, message
+   * dropped); a miss only costs layout, so the caller logs it and posts anyway.
+   */
+  function compactNoteEditorBreaks() {
+    return new Promise(function (resolve) {
+      try {
+        if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) { resolve(null); return; }
+        var settled = false;
+        var timer = setTimeout(function () { if (!settled) { settled = true; resolve(null); } }, 2000);
+        chrome.runtime.sendMessage({ type: "srCompactNoteBreaks" }, function (resp) {
+          var err = chrome.runtime.lastError;
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(err ? null : (resp || null));
+        });
+      } catch (_) { resolve(null); }
+    });
+  }
+
+  /**
    * Find the "Resume" / "Latest Resume" attachment link in the job-application
    * sidebar. Clicking it opens the full resume in a new tab (the background then
    * captures + closes it). Prefers "Latest Resume" (most recent upload).
@@ -642,6 +666,32 @@
       }
     }
     return latest || plain || any;
+  }
+
+  /**
+   * One-line structural summary of what the resume tab holds when no text was read —
+   * counts only, never content (diagnostics are PII-sensitive). Tells apart "no
+   * document mounted", "pages drawn but no text layer" (scanned/image file) and
+   * "a non-PDF preview".
+   */
+  function describeResumeViewer(doc) {
+    var root = doc.querySelector("#st-candidateView") || doc.body;
+    function count(sel) { try { return queryDeepSelectorAll(root, null, sel).length; } catch (_) { return 0; } }
+    var names = [];
+    try {
+      var links = queryDeepSelectorAll(root, null,
+        "sr-attachments-v2 a, sr-attachments-v2 spl-link-button, sr-attachment-row a, sr-attachment-row spl-link-button");
+      for (var i = 0; i < links.length && names.length < 5; i++) {
+        var t = (getDeepText(links[i]) || "").replace(/\s+/g, " ").trim();
+        var ext = (t.match(/\.(pdf|docx?|rtf|odt|txt|png|jpe?g)\b/i) || [])[1];
+        var kind = /cover/i.test(t) ? "cover letter" : /resume|cv\b/i.test(t) ? "resume" : "other";
+        names.push(kind + (ext ? " ." + ext.toLowerCase() : ""));
+      }
+    } catch (_) {}
+    return "Resume viewer: " + count(".page, [class*='pdfViewer'] .page") + " PDF pages, " +
+      count("canvas") + " canvases, " + count(".textLayer span, [class*='textLayer'] span") + " text spans, " +
+      count("iframe, embed, object") + " frames/embeds" +
+      "; attachments: " + (names.length ? names.join(", ") : "none found");
   }
 
   /**
@@ -676,6 +726,7 @@
       try { link.scrollIntoView({ block: "center", behavior: "instant" }); } catch (_) {}
       try { link.click(); } catch (_) { try { dispatchClickAtElementCenter(link, win, 0.5); } catch (_2) {} }
       var text = "";
+      var tabOpened = false;
       for (var w = 0; w < 24000; w += 600) {
         await sleep(600);
         var res = await new Promise(function (resolve) {
@@ -687,6 +738,14 @@
           } catch (_) { resolve(null); }
         });
         if (res && res.done) { text = res.text || ""; break; }
+        if (res && res.opened) tabOpened = true;
+        // A real attachment opens its tab within a second of the click; past 6s the
+        // link opened nothing (e.g. it isn't a viewable resume), so stop waiting.
+        if (!tabOpened && w >= 6000) {
+          log.push({ ok: false, msg: "Fallback: no resume tab opened after clicking \"" +
+            (getDeepText(link) || "").replace(/\s+/g, " ").trim().slice(0, 40) + "\" — giving up" });
+          return "";
+        }
       }
       log.push({ ok: !!(text && text.length >= 300),
                  msg: "Fallback: resume tab returned " + (text ? text.length : 0) + " chars" });
@@ -782,6 +841,64 @@
       }
     } catch (_) {}
     return "";
+  }
+
+  function elText(el) {
+    return String((el && (el.innerText || el.textContent)) || "").replace(/\s+/g, " ").trim();
+  }
+
+  /**
+   * Profile-side inputs for the note's location line, read from SR's
+   * personal-info row (sr-candidate-personal-info → flex row → items):
+   *   slotTexts  — the first item, SR's location slot. Class path is SR's
+   *                (sm:spl-flex-row omitted — it needs CSS escaping); the deep
+   *                fallback covers shadow-root rendering.
+   *   otherTexts — every other spl-typography-body in the row (title, phone…).
+   *   phone      — a tel: link, else a +CC number shown in the row.
+   */
+  function getProfileLocationInputs(doc) {
+    var ITEM = "div.spl-flex.spl-flex-wrap.spl-flex-col > div:nth-child(1) > spl-typography-body";
+    var infos = [];
+    try { infos = Array.prototype.slice.call(doc.querySelectorAll("#st-candidateView sr-candidate-personal-info")); } catch (_) {}
+    if (!infos.length) {
+      try { infos = queryDeepSelectorAll(doc.documentElement || doc.body, null, "sr-candidate-personal-info"); } catch (_) {}
+    }
+    var slotEls = [], bodyEls = [];
+    for (var i = 0; i < infos.length; i++) {
+      try { slotEls = slotEls.concat(queryDeepSelectorAll(infos[i], null, ITEM)); } catch (_) {}
+      try { bodyEls = bodyEls.concat(queryDeepSelectorAll(infos[i], null, "spl-typography-body")); } catch (_) {}
+    }
+    var slotTexts = slotEls.map(elText).filter(Boolean);
+    var otherTexts = bodyEls.filter(function (el) { return slotEls.indexOf(el) < 0; }).map(elText).filter(Boolean);
+    var phone = "";
+    try {
+      var tels = queryDeepSelectorAll(doc.documentElement || doc.body, null, 'a[href^="tel:"]');
+      if (tels.length) phone = String(tels[0].getAttribute("href") || "").replace(/^tel:/i, "").trim();
+    } catch (_) {}
+    if (!phone) {
+      var all = slotTexts.concat(otherTexts);
+      for (var k = 0; k < all.length && !phone; k++) {
+        var m = /\+\d[\d\s\-()]{7,}/.exec(all[k]);
+        if (m) phone = m[0].trim();
+      }
+    }
+    return { slotTexts: slotTexts, otherTexts: otherTexts, phone: phone };
+  }
+
+  /**
+   * "Chennai, India (verified)" from the profile field, else a location inferred
+   * from the resume text ("(from resume)"), else the phone's country ("(from
+   * phone)"). Rules live in location-infer.js (__srLocation). resumeText must be
+   * the real resume — pass "" when only SR profile chrome was captured.
+   */
+  function getCandidateLocation(doc, resumeText) {
+    var L = (typeof __srLocation !== "undefined" && __srLocation) ||
+      (typeof require === "function" ? require("./location-infer.js") : null);
+    if (!L) return { label: "", method: "" };
+    var inputs = getProfileLocationInputs(doc);
+    inputs.resumeText = resumeText || "";
+    var res = L.resolveCandidateLocation(inputs);
+    return { label: L.formatLocationLabel(res), method: res ? res.method : "none" };
   }
 
   /**
@@ -929,11 +1046,24 @@
     var root = doc.querySelector("#st-candidateView") || doc.body;
     if (!root) return false;
 
+    // The "Latest Resume" attachment link also says "resume", but clicking it opens the
+    // file in a NEW tab instead of switching the viewer — those tabs were left open
+    // after runs. Never click a link that leaves the page; the attachment fallback
+    // (srArmResumeCapture) opens it deliberately when it's really needed.
+    function opensNewPage(el) {
+      if (!el || el.tagName !== "A") return false;
+      var href = (el.getAttribute && el.getAttribute("href")) || "";
+      var target = (el.getAttribute && el.getAttribute("target")) || "";
+      var txt = (el.textContent || "").trim().toLowerCase();
+      return target === "_blank" || /attachment|download/i.test(href) || /^latest\s+r[eé]sum[eé]/.test(txt);
+    }
+
     function findResumeTab(r) {
       for (var s = 0; s < tabSelectors.length; s++) {
         try {
           var els = r.querySelectorAll(tabSelectors[s]);
           for (var i = 0; i < els.length; i++) {
+            if (opensNewPage(els[i])) continue;
             var txt = (els[i].textContent || els[i].innerText || "").trim().toLowerCase();
             if (txt.includes("resume") || txt.includes("résumé") || txt === "cv") return els[i];
           }
@@ -946,7 +1076,7 @@
         visited.add(node);
         if (node.nodeType === 1) {
           var t = (node.textContent || "").trim().toLowerCase();
-          if ((t.includes("resume") || t.includes("résumé") || t === "cv") &&
+          if ((t.includes("resume") || t.includes("résumé") || t === "cv") && !opensNewPage(node) &&
               (node.tagName === "BUTTON" || node.tagName === "A" ||
                (node.getAttribute && node.getAttribute("role") === "tab"))) {
             found = node;
@@ -1850,7 +1980,35 @@
         return clickTarget;
       }
     }
+    // Fallback: the Notes tab is an <a> whose href ends in /notes, so it can be found
+    // even when its label text isn't readable (seen live: label missing from the DOM
+    // on some worker-tab loads, so every note in a row failed).
+    try {
+      var links = queryDeepSelectorAll(root, win, "a[href]");
+      for (var j = 0; j < links.length; j++) {
+        var href = links[j].getAttribute("href") || "";
+        if (/\/app\/people\/applications\/[^/?#]+\/notes(?:[?#]|$)/.test(href)) return links[j];
+      }
+    } catch (_) {}
     return null;
+  }
+
+  /**
+   * What the profile's tab bar held when the Notes tab wasn't found, for the log:
+   * tab labels (SR's own UI text, no candidate data), page visibility and width.
+   */
+  function describeTabBar(doc, win) {
+    var labels = [];
+    try {
+      var els = queryDeepSelectorAll(doc.body || doc.documentElement, win, "spl-tab-label");
+      for (var i = 0; i < els.length && labels.length < 12; i++) {
+        labels.push(((els[i].textContent || "") + "").replace(/\s+/g, " ").trim().slice(0, 20));
+      }
+    } catch (_) {}
+    var vis = "", w = 0;
+    try { vis = doc.visibilityState || ""; } catch (_) {}
+    try { w = win.innerWidth || 0; } catch (_) {}
+    return "tabs=[" + labels.join(", ") + "] visibility=" + vis + " width=" + w;
   }
 
   /**
@@ -2049,15 +2207,70 @@
   // incomplete rather than a true negative.
   var PARTIAL_SCAN_WARNING = "⚠ Resume PDF not read — partial scan (profile data only)";
 
-  function formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan) {
-    var body = (hitCount === 0 || !hitLabels || !hitLabels.length)
-      ? "No keyword tagged"
-      : hitLabels.join(", ");
-    var summary = (notePrefix || "") + body + " - Matched " + hitCount + "/" + totalKeywords;
-    if (partialScan) summary += "\n" + PARTIAL_SCAN_WARNING;
+  // Usual spelling of common terms whose capitalisation isn't just a capital first
+  // letter. Keys are lowercase; looked up per word and for the whole keyword.
+  var KEYWORD_DISPLAY_CASE = {};
+  ("AI ML DL NLP CV LLM LLMs RAG GPU AWS GCP SQL NoSQL API APIs REST JSON XML HTML CSS PHP " +
+   "WAF IAM SSO CIAM SIEM SOC DNS VPN DDoS OSINT CTF OCR RPA ETL ELT BI KPI CRM ERP SAP GIS " +
+   "QA UI UX SEO GDPR ISO HR TA B2B B2C FMCG CPG MBA MSc BSc PhD R&D CI/CD DevOps MLOps SecOps SaaS PaaS IaaS " +
+   "iOS macOS PyTorch TensorFlow NumPy OpenCV JavaScript TypeScript GitHub GitLab LinkedIn " +
+   "PostgreSQL MySQL MongoDB SailPoint .NET C# C++ Node.js K8s").split(" ").forEach(function (w) {
+    KEYWORD_DISPLAY_CASE[w.toLowerCase()] = w;
+  });
+  var KEYWORD_SMALL_WORDS = { and: 1, or: 1, of: 1, in: 1, on: 1, for: 1, with: 1, to: 1, the: 1, a: 1, an: 1 };
+
+  /**
+   * "scrapy (x3)" → "Scrapy (x3)", "data acquisition" → "Data Acquisition",
+   * "waf" → "WAF". A keyword the recruiter typed with capitals keeps their spelling.
+   * Note display only — results and diagnostics keep the matched text as-is.
+   */
+  function displayKeywordLabel(label) {
+    var m = /^(.*?)(\s*\(x\d+\))?$/.exec(String(label == null ? "" : label));
+    var kw = m[1], count = m[2] || "";
+    if (/[A-Z]/.test(kw)) return kw + count;
+    var whole = KEYWORD_DISPLAY_CASE[kw.toLowerCase()];
+    if (whole) return whole + count;
+    var words = kw.split(/(\s+|-)/);
+    var first = true;
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      if (!w || /^(\s+|-)$/.test(w)) continue;
+      var known = KEYWORD_DISPLAY_CASE[w.toLowerCase()];
+      if (known) words[i] = known;
+      else if (!first && KEYWORD_SMALL_WORDS[w]) words[i] = w;
+      else words[i] = w.charAt(0).toUpperCase() + w.slice(1);
+      first = false;
+    }
+    return words.join("") + count;
+  }
+
+  /**
+   * Note body as lines, read top to bottom: location first, then the match
+   * count, then one line per matched keyword, capitalised (a comma-joined row was
+   * hard to scan), with a blank line between the count and the list. Zero hits
+   * stays a single "No keyword tagged - Matched 0/N" line.
+   */
+  function noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location) {
+    var lines = [];
+    if (location) lines.push("Location: " + location);
+    var matched = "Matched " + hitCount + "/" + totalKeywords;
+    if (hitCount === 0 || !hitLabels || !hitLabels.length) {
+      lines.push((notePrefix || "") + "No keyword tagged - " + matched);
+    } else {
+      lines.push((notePrefix || "") + matched + ":");
+      lines.push(""); // blank line between the count and the keyword list
+      for (var i = 0; i < hitLabels.length; i++) lines.push(displayKeywordLabel(hitLabels[i]));
+    }
+    if (partialScan) lines.push(PARTIAL_SCAN_WARNING);
+    return lines;
+  }
+
+  function formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location) {
+    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location);
     // SR notes are plain-text, so name + URL go in as a plain header line (no markup).
     var header = [candidateName, profileUrl].filter(function (p) { return p; }).join(" | ");
-    return header ? header + "\n" + summary : summary;
+    if (header) lines.unshift(header);
+    return lines.join("\n");
   }
 
   function escapeHtml(s) {
@@ -2070,17 +2283,14 @@
    * hyperlink instead of a bare URL. Used ONLY when the notes field is a
    * contenteditable rich editor — a plain <textarea> cannot hold an anchor.
    */
-  function formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan) {
-    var body = (hitCount === 0 || !hitLabels || !hitLabels.length)
-      ? "No keyword tagged"
-      : hitLabels.join(", ");
-    var summary = escapeHtml((notePrefix || "") + body + " - Matched " + hitCount + "/" + totalKeywords);
-    if (partialScan) summary += "<br>" + escapeHtml(PARTIAL_SCAN_WARNING);
+  function formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location) {
+    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location).map(escapeHtml);
     var parts = [];
     if (candidateName) parts.push(escapeHtml(candidateName));
     if (profileUrl) parts.push('<a href="' + escapeHtml(profileUrl) + '">SR Profile</a>');
     var header = parts.join(" | ");
-    return header ? header + "<br>" + summary : summary;
+    if (header) lines.unshift(header);
+    return lines.join("<br>");
   }
 
   /* ── Note-save confirmation: detect the note actually rendering in the feed ── */
@@ -2097,17 +2307,17 @@
   }
 
   /**
-   * Distinctive, render-stable marker for a just-composed note: the matched
-   * keyword body (or "No keyword tagged"), normalised and capped. The matched
-   * keyword list is profile-specific, so its appearance in the notes feed is a
-   * reliable "this note saved and rendered" signal — unlike a URL substring or
-   * the compose field clearing, neither of which fires for SR's div editor.
+   * Render-stable marker for a just-composed note: its "matched N/T" count.
+   * The note is now one keyword per line, and the feed may render those lines
+   * as separate elements whose textContent runs together ("• nlp• keras"), so
+   * the keyword list itself is no longer a reliable substring. The count sits
+   * on a single line in every note format. It only has to be new in this
+   * profile's feed: feedDeltaCount compares copies before vs after Post, so
+   * older notes with the same count are in the baseline. Unlike a URL
+   * substring or the compose field clearing, this fires for SR's div editor.
    */
-  function noteConfirmMarker(hitLabels, hitCount) {
-    var body = (!hitCount || !hitLabels || !hitLabels.length)
-      ? "No keyword tagged"
-      : hitLabels.join(", ");
-    return _normNoteText(body).slice(0, 60);
+  function noteConfirmMarker(hitCount, totalKeywords) {
+    return _normNoteText("Matched " + (hitCount || 0) + "/" + totalKeywords);
   }
 
   /**
@@ -2346,7 +2556,7 @@
     log = log || [];
     var notesTab = findNotesTab(doc, win);
     if (!notesTab) {
-      log.push({ ok: false, msg: "Notes: tab element not found in DOM — cannot open notes" });
+      log.push({ ok: false, msg: "Notes: tab element not found in DOM — cannot open notes (" + describeTabBar(doc, win) + ")" });
       return false;
     }
     log.push({ ok: true, msg: "Notes: tab found, clicking to open" });
@@ -2433,7 +2643,7 @@
         dispatchClickAtElementCenter(notesTab2, win, 0.5);
         try { notesTab2.click(); } catch (_) {}
       } else {
-        log.push({ ok: false, msg: "Notes: tab not found in DOM during post attempt" });
+        log.push({ ok: false, msg: "Notes: tab not found in DOM during post attempt (" + describeTabBar(doc, win) + ")" });
       }
       for (var wait = 0; wait < 4000; wait += 200) {
         await sleep(200);
@@ -2460,9 +2670,25 @@
     try { candidateName = getCandidateName(doc); } catch (_) {}
     var profileUrl = "";
     try { profileUrl = (doc.location && doc.location.href) || ""; } catch (_) {}
-    var noteText = formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan);
+    var location = "";
+    try {
+      var loc = getCandidateLocation(doc, (opts && opts.resumeText) || "");
+      location = loc.label;
+      // Method only — the location itself is candidate data and stays out of the log.
+      log.push({ ok: true, msg: "Notes: location " + (location ? "via " + loc.method : "not found") });
+    } catch (_) {}
+    var noteText = formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location);
     var itag = (input.tagName || "").toLowerCase();
     var isRichEditor = (itag !== "textarea" && itag !== "input");
+
+    if (isRichEditor) {
+      var compact = await compactNoteEditorBreaks();
+      if (compact && compact.ok) {
+        log.push({ ok: true, msg: "Notes: compact line breaks on (" + compact.editors + " editor)" });
+      } else {
+        log.push({ ok: false, msg: "Notes: could not compact line breaks — note may be double-spaced" + (compact && compact.error ? " (" + compact.error + ")" : "") });
+      }
+    }
 
     // Rich-text editor + a profile URL → insert a real "SR Profile" hyperlink via
     // insertHTML. Textareas can't hold anchors, so they fall through to plain text.
@@ -2474,7 +2700,7 @@
         input.focus();
         var rsel = ownerWin.getSelection && ownerWin.getSelection();
         if (rsel && rsel.selectAllChildren) rsel.selectAllChildren(input);
-        var noteHtml = formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan);
+        var noteHtml = formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location);
         usedRichHtml = ownerDoc.execCommand("insertHTML", false, noteHtml);
       } catch (_) {}
       if (usedRichHtml) {
@@ -2564,7 +2790,7 @@
     // The matched-keyword body is profile-specific; record how many copies of it
     // already render in the feed (excluding the compose box) BEFORE we post, so an
     // increase afterwards proves a new note element appeared.
-    var noteMarker = noteConfirmMarker(hitLabels, hitCount);
+    var noteMarker = noteConfirmMarker(hitCount, totalKeywords);
     var baselineFeed = feedCopiesOfNote(doc, win, noteMarker, input);
 
     // Click Post exactly once — never retry. Retrying risks posting blank notes when SR
@@ -2845,6 +3071,7 @@
       }
       if (resumeIsChrome) {
         log.push({ ok: false, msg: "Resume: PDF text layer never rendered — scan limited to SR profile/skills data (resume-only keywords may be missed)" });
+        try { log.push({ ok: false, msg: describeResumeViewer(doc) }); } catch (_) {}
       }
     }
     phase.mark("resumeRetry");
@@ -3006,7 +3233,7 @@
       try { await prepareNotesSection(doc, win, log); } catch (_) {}
       phase.mark("notesPrepare");
       try {
-        notesPosted = await postKeywordHitsToNotes(doc, win, hitLabels, hitCount, userKeywordCount, log, "", { partialScan: !resumeWasRead(resumeText, resumeIsChrome) });
+        notesPosted = await postKeywordHitsToNotes(doc, win, hitLabels, hitCount, userKeywordCount, log, "", { partialScan: !resumeWasRead(resumeText, resumeIsChrome), resumeText: resumeWasRead(resumeText, resumeIsChrome) ? resumeText : "" });
       } catch (e) {
         log.push({ ok: false, msg: "Notes post error: " + ((e && e.message) || String(e)) });
       }
@@ -3165,6 +3392,7 @@
       }
       if (resumeIsChromeBool) {
         log.push({ ok: false, msg: "Resume: PDF text layer never rendered — scan limited to SR profile/skills data (resume-only terms may be missed)" });
+        try { log.push({ ok: false, msg: describeResumeViewer(doc) }); } catch (_) {}
       }
     }
     phase.mark("resumeRetry");
@@ -3346,7 +3574,7 @@
       phase.mark("notesPrepare");
       var boolPrefix = booleanPass ? "[PASS] " : "[FAIL] ";
       try {
-        notesPosted = await postKeywordHitsToNotes(doc, win, allHitLabels, allHitLabels.length, totalTerms, log, boolPrefix, { partialScan: !resumeWasRead(resumeText, resumeIsChromeBool) });
+        notesPosted = await postKeywordHitsToNotes(doc, win, allHitLabels, allHitLabels.length, totalTerms, log, boolPrefix, { partialScan: !resumeWasRead(resumeText, resumeIsChromeBool), resumeText: resumeWasRead(resumeText, resumeIsChromeBool) ? resumeText : "" });
       } catch (e) {
         log.push({ ok: false, msg: "Notes post error: " + ((e && e.message) || String(e)) });
       }
@@ -3539,6 +3767,7 @@
       deduplicateHitsByCanonical: deduplicateHitsByCanonical,
       formatNoteText: formatNoteText,
       formatNoteHtml: formatNoteHtml,
+      displayKeywordLabel: displayKeywordLabel,
       dedupeTextSegments: dedupeTextSegments,
       collapseInlineRepeats: collapseInlineRepeats,
       noteConfirmMarker: noteConfirmMarker,
@@ -3577,6 +3806,9 @@
       return collectApplicantClickTargets(document, window);
     };
   }
+  globalThis.__srEnsureResumeTabActive = function () {
+    return ensureResumeTabActive(document, window);
+  };
   globalThis.__srWaitForResumeText = function (maxMs) {
     return makeResumeTextWaiter(document, maxMs);
   };

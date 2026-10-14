@@ -14,7 +14,9 @@ zip -qr "$OUT" . \
      'tests/*' 'scripts/*' 'dist/*' '*.md' '*.zip' 'NIQ logo.png'
 
 # Sanity check: manifest.json must be at the zip root or Chrome rejects the upload.
-unzip -l "$OUT" | grep -qE ' manifest\.json$' || { echo "manifest.json missing from zip root" >&2; exit 1; }
+# grep without -q reads all input: -q exits on the first match, and under pipefail the
+# SIGPIPE that kills unzip would fail the check even though the manifest is there.
+unzip -Z1 "$OUT" | grep -x 'manifest.json' >/dev/null || { echo "manifest.json missing from zip root" >&2; exit 1; }
 
 echo "$OUT"
 unzip -l "$OUT" | tail -1

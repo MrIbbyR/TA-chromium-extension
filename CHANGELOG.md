@@ -5,6 +5,22 @@ MAJOR for breaking changes to user workflow or stored data, MINOR for new featur
 
 The top `## [x.y.z]` heading must match `"version"` in `manifest.json` — `tests/release.test.js` enforces this.
 
+## [2.6.0] - 2026-10-14
+
+Keyword notes are easier to read and say where the candidate is; runs stay out of your way and really use 3 tabs at 3×.
+
+### Fixed
+- **Keyword notes were double-spaced.** SmartRecruiters' notes editor added an extra blank line after every line of the note. Notes now post as compact lines, with the SR Profile link unchanged.
+- **Resume tabs left open after a run.** The resume-tab search could click the "Latest Resume" attachment link, which opens the file in a new tab; it now skips links that open a new page. Any tab a worker opens is closed even if it appears after that worker finished or just after the run ended, and the run end sweeps up any that are left.
+- **Runs no longer take over your tabs.** Worker tabs open in their own window instead of yours. To render a resume, a worker tab is activated inside that window, and the window is only raised if the page would otherwise stay hidden. Focus goes back to your window afterwards, unless you've moved to another tab or window yourself, in which case you're left where you are. Before, the run switched your window to worker tabs and back to whatever tab was active when it first did so.
+- **3× ran on only 2 worker tabs.** With quick profiles, the two busy tabs took every load slot under the pace limit, so the third tab never opened and 3× was no faster than 2×. A new tab now reserves its slot like a reused tab does.
+- **An unreadable resume no longer stalls for 24 extra seconds.** When the inline viewer gave no text, the attachment fallback clicked a "resume" link and then waited its full 24 seconds even if the click opened nothing (seen on a profile whose upload was a cover letter), holding the front tab the whole time. It now gives up 6 seconds after a click that opens no tab. The diagnostics for such a profile also record what the resume tab held: PDF page, canvas, text-span and frame counts, plus attachment kinds and file types, with no names or text.
+
+### Changed
+- **Pace limit scales with workers:** 3 profiles a minute per worker, so 2× stays at about 6 a minute and 3× runs at about 9 a minute (previously 6 for both). 3× is now meaningfully faster, at a higher request rate to SmartRecruiters.
+- **Keyword notes are a top-to-bottom list.** Under the name | SR Profile header, the note now shows the candidate's location (e.g. "Location: Chennai, India (verified)"), then "Matched N/T:" and a blank line, then one keyword per line, capitalised ("Scrapy (x3)", "Data Acquisition", "WAF"; anything you typed with capitals keeps your spelling), where it used to be a single comma-separated line. Zero hits is still one "No keyword tagged - Matched 0/N" line. Note-save confirmation now looks for the "Matched N/T" text in the notes feed.
+- **Candidate location in keyword notes.** Taken from the profile's location field when set, marked "(verified)". Otherwise it is inferred from the resume text the scan already read (labelled lines like "Location:", "City, State, Country" lines, then cities scored by position and country), marked "(from resume)", or as a last resort the country from the phone's calling code, marked "(from phone)". Cities are checked against a bundled city list (`location-gazetteer.js`, built from geonames), so job titles, skills and words like "Mobile" or "Reading" aren't mistaken for places. Nothing new is stored. Ported from the ATS market reporter's location logic, without its NER/OCR steps.
+
 ## [2.5.0] - 2026-09-24
 
 Run health for the parallel (2×/3×) queue: stop runs that are failing, and warn before starting one that would.

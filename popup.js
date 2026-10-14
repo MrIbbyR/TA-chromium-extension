@@ -1249,7 +1249,7 @@ async function ensureKeywordCore(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: false },
     // storage-session-shim.js first — see ensureSalaryCore for why (predates-reload tabs).
-    files: ["storage-session-shim.js", "keyword-expansions.js", "sr-list-autoscroll.js", "keyword-triage-core.js"],
+    files: ["storage-session-shim.js", "keyword-expansions.js", "location-gazetteer.js", "location-infer.js", "sr-list-autoscroll.js", "keyword-triage-core.js"],
   });
 }
 

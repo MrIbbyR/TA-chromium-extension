@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NIQ TA Helper",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Smartrecruiters TA helper for NIQ associates. Cost assist, Cntrl F Tagging & Boolean tagging and Offer automation",
   "permissions": ["activeTab", "scripting", "storage", "tabs", "notifications", "alarms"],
   "background": {
@@ -22,7 +22,7 @@
   "content_scripts": [
     {
       "matches": ["https://*.smartrecruiters.com/*"],
-      "js": ["sr-selectors.js", "sr-list-autoscroll.js", "salary-triage-core.js", "keyword-expansions.js", "keyword-triage-core.js"],
+      "js": ["sr-selectors.js", "sr-list-autoscroll.js", "salary-triage-core.js", "keyword-expansions.js", "location-gazetteer.js", "location-infer.js", "keyword-triage-core.js"],
       "run_at": "document_idle",
       "all_frames": true
     },
