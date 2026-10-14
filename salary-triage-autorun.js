@@ -203,6 +203,16 @@
   // The background opens 2–3 background tabs and feeds each a profile URL (mirrors the
   // keyword 2×/3× flow). Cost assist reads screening answers straight from the DOM with
   // no PDF/resume render, so worker tabs can stay hidden — none of the resume-focus dance.
+  // DataDome (SR's bot protection) shows its challenge in an iframe from captcha-delivery.com.
+  // The background pauses the run and hands the tab to the recruiter.
+  function botCheckVisible() {
+    try {
+      return !!document.querySelector('iframe[src*="captcha-delivery.com"], #ddChallengeBody');
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function runAsParallelWorker() {
     if (!isProfilePage()) return false;
     if (window.__srSalaryParallelWorkerLock) return false;
@@ -211,7 +221,7 @@
     let isWorker = false;
     try {
       const resp = await new Promise(function (resolve) {
-        chrome.runtime.sendMessage({ type: "srIsParallelWorker" }, function (r) {
+        chrome.runtime.sendMessage({ type: "srIsParallelWorker", botCheck: botCheckVisible() }, function (r) {
           if (chrome.runtime.lastError) resolve(null);
           else resolve(r);
         });
@@ -237,7 +247,7 @@
     if (!controlsOk) {
       try {
         chrome.runtime.sendMessage(
-          { type: "srWorkerDone", moved: false, error: "controls_timeout" },
+          { type: "srWorkerDone", moved: false, error: "controls_timeout", botCheck: botCheckVisible() },
           function () { chrome.runtime.lastError; }
         );
       } catch (_) {}
@@ -263,7 +273,7 @@
       // just reports and returns; the reloaded page re-enters runAsParallelWorker.
       await new Promise(function (resolve) {
         chrome.runtime.sendMessage(
-          { type: "srWorkerDone", moved: !!(result && result.moved) },
+          { type: "srWorkerDone", moved: !!(result && result.moved), botCheck: botCheckVisible() },
           function (r) { chrome.runtime.lastError; resolve(r); }
         );
       });

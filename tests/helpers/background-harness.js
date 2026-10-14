@@ -86,11 +86,23 @@ function createBrowser(opts = {}) {
     }
   }
 
+  // Logged out of SmartRecruiters: every SR page redirects to the sign-in page, and
+  // after login() each tab is sent back to where it was going (as SR does).
+  let loggedOut = false;
+  const isSR = (u) => /^https?:\/\/[^/]*smartrecruiters\.com\//.test(u || '');
+
+  // DataDome block: while on, every SR page load shows the challenge (t.botCheck) until
+  // the recruiter solves it in one tab; that tab then reloads, as DataDome does.
+  let botBlocked = false;
+
   function navigate(t, url) {
+    if (loggedOut && isSR(url) && url !== SIGN_IN_URL) { t.returnTo = url; url = SIGN_IN_URL; }
+    t.botCheck = botBlocked && isSR(url);
     t.url = url;
     t.navSeq++;
     t.status = 'loading';
     events.push(['nav', t.id, url, clock.now]);
+    addTimer(BROWSER, 0, () => { if (tabs.get(t.id) === t && t.url === url) fireSW('tabUpdated', [t.id, { url, status: 'loading' }, pubTab(t)]); });
     const owner = { kind: 'page', tabId: t.id, navSeq: t.navSeq };
     addTimer(owner, pageLoadMs, () => {
       t.status = 'complete';
@@ -106,6 +118,7 @@ function createBrowser(opts = {}) {
       tabId: t.id,
       url,
       sendMessage: (message) => sendToSW(message, { tab: { id: t.id, url } }),
+      botCheck: () => !!t.botCheck,
       // Resolves only if the page is still alive; a navigated-away page just stops.
       sleep: (ms) => new Promise((r) => addTimer(owner, ms, r)),
       record: (what) => pageLog.push({ tabId: t.id, url, what, at: clock.now }),
@@ -219,7 +232,15 @@ function createBrowser(opts = {}) {
         create(id, options) { notifications.push({ id, ...clone(options), at: clock.now }); },
       },
       scripting: {
-        executeScript(inj) { events.push(['exec', inj.target.tabId, clock.now]); return Promise.resolve([]); },
+        executeScript(inj) {
+          events.push(['exec', inj.target.tabId, clock.now]);
+          // The background's bot-check probe gets the tab's challenge state.
+          if (inj.func && /captcha-delivery/.test(String(inj.func))) {
+            const t = tabs.get(inj.target.tabId);
+            return t ? Promise.resolve([{ result: !!t.botCheck }]) : noTab(inj.target.tabId);
+          }
+          return Promise.resolve([]);
+        },
       },
       alarms: {
         create(name, info = {}) {
@@ -341,6 +362,33 @@ function createBrowser(opts = {}) {
     get swAlive() { return !!sw; },
     sendFromPopup: (message) => sendToSW(message, {}),
     // The recruiter closing a tab by hand (fires tabs.onRemoved, waking the SW if needed).
+    // In-page route change (pushState): the URL changes but the page — and its content
+    // script — keeps running.
+    spaNavigate(id, url) {
+      const t = tabs.get(id);
+      t.url = url;
+      events.push(['spa-nav', id, url, clock.now]);
+      addTimer(BROWSER, 0, () => fireSW('tabUpdated', [id, { url }, pubTab(t)]));
+    },
+    logout() {
+      loggedOut = true;
+      for (const t of tabs.values()) if (isSR(t.url) && t.url !== SIGN_IN_URL) navigate(t, t.url);
+    },
+    login() {
+      loggedOut = false;
+      for (const t of tabs.values()) if (t.url === SIGN_IN_URL && t.returnTo) navigate(t, t.returnTo);
+    },
+    blockBots() { botBlocked = true; },
+    // DataDome's overlay over an already-loaded page (a blocked XHR mid-profile).
+    showBotCheck(id) { tabs.get(id).botCheck = true; },
+    // The recruiter solves the challenge in tab `id`: the block lifts and that tab reloads.
+    // reload: false models a challenge that clears without a reload.
+    solveBotCheck(id, { reload = true } = {}) {
+      botBlocked = false;
+      const t = tabs.get(id);
+      t.botCheck = false;
+      if (reload) navigate(t, t.url);
+    },
     userCloseTab(id) {
       if (!tabs.delete(id)) return false;
       events.push(['tab-remove', id, clock.now, 'user']);
@@ -363,12 +411,13 @@ function createBrowser(opts = {}) {
 // opensTab: 'stray' opens a resume tab without arming a capture (like a stray click on
 //   the attachment link); 'fallback' arms srArmResumeCapture first, as the real
 //   attachment fallback does. Either way the tab opens halfway through the work.
+const SIGN_IN_URL = 'https://www.smartrecruiters.com/account/sign-in';
 const RESUME_TAB_URL = 'https://www.smartrecruiters.com/app/attachments/latest-resume';
 
 function workerPage({ feature = 'keyword', behaviour, reportTwice = false }) {
   const visits = new Map();
   return async (page) => {
-    const resp = await page.sendMessage({ type: 'srIsParallelWorker' });
+    const resp = await page.sendMessage({ type: 'srIsParallelWorker', botCheck: page.botCheck() });
     const mine = resp && resp.active && (resp.feature === feature || (feature === 'keyword' && resp.feature == null));
     if (!mine) { page.record('idle'); return; }
     const visit = (visits.get(page.url) || 0) + 1;
@@ -390,10 +439,10 @@ function workerPage({ feature = 'keyword', behaviour, reportTwice = false }) {
       await page.sleep(b.workMs);
     }
     page.record('processed');
-    const done = { type: 'srWorkerDone', ...b.report };
+    const done = { type: 'srWorkerDone', ...b.report, botCheck: page.botCheck() };
     page.sendMessage(done);
     if (reportTwice) page.sendMessage(done);
   };
 }
 
-module.exports = { createBrowser, workerPage, RESUME_TAB_URL };
+module.exports = { createBrowser, workerPage, RESUME_TAB_URL, SIGN_IN_URL };

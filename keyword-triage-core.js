@@ -16,6 +16,31 @@
     return new Promise(function (r) { setTimeout(r, ms); });
   }
 
+  /**
+   * Per-phase wall-clock timer for the diagnostics entry. `mark(name)` charges the time
+   * since the previous mark to `name` (repeat marks accumulate). `seed` holds phases
+   * measured before the core ran (page load, autorun waits) and keeps them first.
+   * `now` is injectable for tests.
+   */
+  function makePhaseTimer(seed, now) {
+    now = now || function () { return performance.now(); };
+    var phases = {};
+    if (seed && typeof seed === "object") {
+      for (var k in seed) {
+        if (Object.prototype.hasOwnProperty.call(seed, k) && typeof seed[k] === "number") phases[k] = Math.round(seed[k]);
+      }
+    }
+    var last = now();
+    return {
+      mark: function (name) {
+        var t = now();
+        phases[name] = (phases[name] || 0) + Math.round(t - last);
+        last = t;
+      },
+      phases: phases,
+    };
+  }
+
   function isVisible(el, win) {
     if (!el) return false;
     var style = win.getComputedStyle(el);
@@ -962,18 +987,21 @@
    * spam getResumeOnlyText (which does shadow-DOM traversal) on every mutation.
    * A 500 ms fallback poll catches anything the observer might miss.
    */
+  var PDF_SETTLE_MS = 800;
+
   function makeResumeTextWaiter(doc, maxMs) {
     return new Promise(function (resolve) {
       var done = false;
+      var pdfLen = 0, pdfChangedAt = 0;
 
-      function finish() {
+      function finish(pdfText) {
         if (done) return;
         done = true;
-        obs.disconnect();
+        if (obs) obs.disconnect();   // unset when the immediate first check() finishes
         clearTimeout(timer);
         clearInterval(fallbackPoll);
-        var text = "";
-        try { text = getResumeText(doc); } catch (_) {}
+        var text = pdfText || "";
+        if (!text) { try { text = getResumeText(doc); } catch (_) {} }
         resolve(text);
       }
 
@@ -983,7 +1011,23 @@
         try { preview = getResumeOnlyText(doc); } catch (_) {}
         // Resolve only on real resume text — never on SR's summary chrome, which can
         // appear inside the resume-viewer selectors before pdf.js renders the PDF.
-        if (preview && preview.length >= 200 && !looksLikeSrSummaryChrome(preview)) finish();
+        if (preview && preview.length >= 200 && !looksLikeSrSummaryChrome(preview)) { finish(); return; }
+        // On live SR pages the viewer selectors also match the summary sidebar, so the
+        // preview reads as chrome even after the PDF has rendered. The pdf.js text layer
+        // holds only the PDF's own text: resolve once it has ≥200 chars and has stopped
+        // growing for PDF_SETTLE_MS (later pages render lazily, nudged by scrolling).
+        var pdf = "";
+        try { pdf = getPdfTextLayerText(doc); } catch (_) {}
+        var len = pdf.length;
+        if (len < 200) return;
+        var now = Date.now();
+        if (len !== pdfLen) {
+          pdfLen = len;
+          pdfChangedAt = now;
+          try { nudgeResumeViewerScroll(doc); } catch (_) {}
+          return;
+        }
+        if (now - pdfChangedAt >= PDF_SETTLE_MS) finish(pdf);
       }
 
       // Immediate check — content may already be present (e.g. tab was already active).
@@ -2725,6 +2769,7 @@
     var resumeWaitMs = Math.max(1500, parseInt(config.resumeWaitMs, 10) || 3000);
     var textParts = [];
     var _t0 = performance.now();
+    var phase = makePhaseTimer(config.__prePhases);
 
     // Candidate header (name + title) — always visible, loads instantly.
     // Catches titles like "IAM SailPoint Developer" that other sources may miss
@@ -2732,12 +2777,14 @@
     var headerText = "";
     try { headerText = getCandidateHeaderText(doc); } catch (_) {}
     if (headerText) textParts.push(headerText);
+    phase.mark("header");
 
     // Briefly foreground this worker tab so pdf.js renders the resume text layer
     // (it's paused while the tab is hidden). Released once resume extraction is done.
     var gotRenderFocus = false;
     try { gotRenderFocus = await requestResumeRenderFocus(doc); } catch (_) {}
     if (gotRenderFocus) { log.push({ ok: true, msg: "Resume: foregrounded worker tab so pdf.js can render" }); await sleep(250); }
+    phase.mark("focusWait");
 
     // MutationObserver-based resume wait: start the waiter BEFORE clicking the resume
     // tab so the observer is already watching when SR's SPA mounts the PDF viewer.
@@ -2756,6 +2803,7 @@
       var pdfText = getPdfTextLayerText(doc);
       if (pdfText.length > (resumeText || "").length) resumeText = pdfText;
     } catch (_) {}
+    phase.mark("resumeRender");
     // Retry if the resume is sparse OR is actually SR's summary chrome (the
     // ~1000-char sidebar boilerplate that masquerades as a resume and sneaks past a
     // length-only gate — see looksLikeSrSummaryChrome). The PDF text layer often
@@ -2799,6 +2847,7 @@
         log.push({ ok: false, msg: "Resume: PDF text layer never rendered — scan limited to SR profile/skills data (resume-only keywords may be missed)" });
       }
     }
+    phase.mark("resumeRetry");
     log.push({ ok: !!(resumeText && resumeText.length >= 50),
                msg: "Resume: " + (resumeText ? resumeText.length : 0) + " chars" +
                     (resumeText && resumeText.length < 200 ? " (sparse — continuing scan)" : ""),
@@ -2818,6 +2867,7 @@
       textParts.push(resumeTabScan);
       log.push({ ok: true, msg: "Resume tab full-page: " + resumeTabScan.length + " chars" });
     }
+    phase.mark("resumeTabScan");
 
     var _t1 = performance.now();
     try { await ensureProfileTabActive(doc, win); } catch (_) {}
@@ -2840,6 +2890,7 @@
     var screeningText = "";
     try { screeningText = getScreeningText(doc, win); } catch (_) {}
     if (screeningText) textParts.push(screeningText);
+    phase.mark("profileTab");
 
     var allText = textParts.join("\n\n").trim();
 
@@ -2858,6 +2909,7 @@
         log.push({ ok: true, msg: "Retry recovered " + allText.length + " chars" });
       }
     }
+    phase.mark("sparseRetry");
 
     // Always run a full-page shadow-DOM scan — replicates Ctrl+F behavior by walking every
     // text node in every shadow root unconditionally. Class-selector extraction misses SR
@@ -2879,6 +2931,7 @@
     try { excludedKw = getExcludedText(doc); } catch (_) {}
     if (excludedKw) allText = stripExcludedText(allText, excludedKw);
     var textLen = allText.length;
+    phase.mark("textProcessing");
     log.push({ ok: textLen >= 50, msg: "Total text: " + textLen + " chars (header: " + (headerText || "").length + ", resume: " + (resumeText || "").length + ", profile: " + (profileText || "").length + ", screening: " + screeningText.length + ")",
                ms: Math.round(performance.now() - _t1) });
 
@@ -2907,10 +2960,11 @@
             fullPageLen: (fullPage || "").length, totalLen: textLen,
           },
           durationMs: Math.round(performance.now() - _t0),
+          timings: phase.phases,
           log: log.slice(),
         }, diagRawCapture);
       } catch (_) {}
-      return { log: log, moved: false, skipped: true, matchedKeywords: [], hitCount: 0,
+      return { log: log, moved: false, skipped: true, matchedKeywords: [], hitCount: 0, timings: phase.phases,
                textStats: { headerLen: (headerText||"").length, resumeLen: 0, profileLen: 0, totalLen: 0 } };
     }
 
@@ -2940,6 +2994,7 @@
       var sample = allText.slice(0, 300).replace(/\s+/g, " ");
       log.push({ ok: false, msg: "TEXT_SAMPLE: " + sample });
     }
+    phase.mark("match");
 
     var notesPosted = false;
     var _t3 = performance.now();
@@ -2949,11 +3004,13 @@
     var shouldPostNote = postToNotes && (hitCount > 0 || textLen >= 200);
     if (shouldPostNote) {
       try { await prepareNotesSection(doc, win, log); } catch (_) {}
+      phase.mark("notesPrepare");
       try {
         notesPosted = await postKeywordHitsToNotes(doc, win, hitLabels, hitCount, userKeywordCount, log, "", { partialScan: !resumeWasRead(resumeText, resumeIsChrome) });
       } catch (e) {
         log.push({ ok: false, msg: "Notes post error: " + ((e && e.message) || String(e)) });
       }
+      phase.mark("notesPost");
     }
 
     var _tNotes = Math.round(performance.now() - _t3);
@@ -2992,11 +3049,12 @@
           fullPageLen: (fullPage || "").length, totalLen: textLen,
         },
         durationMs: _totalMs,
+        timings: phase.phases,
         log: log.slice(),
       }, diagRawCapture);
     } catch (_) {}
     return { log: log, moved: false, skipped: false, matchedKeywords: hitLabels, hitCount: hitCount,
-             notesPosted: notesPosted, notesFailReason: notesFailReason, totalMs: _totalMs,
+             notesPosted: notesPosted, notesFailReason: notesFailReason, totalMs: _totalMs, timings: phase.phases,
              textStats: { headerLen: (headerText||"").length, resumeLen: (resumeText||"").length,
                           profileLen: (profileText||"").length, totalLen: textLen } };
   }
@@ -3048,15 +3106,18 @@
 
     /* ── Multi-source text extraction — MutationObserver-based resume wait ── */
     var textParts = [];
+    var phase = makePhaseTimer(config.__prePhases);
 
     var headerText = "";
     try { headerText = getCandidateHeaderText(doc); } catch (_) {}
     if (headerText) textParts.push(headerText);
+    phase.mark("header");
 
     // Briefly foreground this worker tab so pdf.js renders the resume text layer.
     var gotRenderFocusBool = false;
     try { gotRenderFocusBool = await requestResumeRenderFocus(doc); } catch (_) {}
     if (gotRenderFocusBool) { log.push({ ok: true, msg: "Resume: foregrounded worker tab so pdf.js can render" }); await sleep(250); }
+    phase.mark("focusWait");
 
     var resumeText = "";
     var resumeWaiterBool = makeResumeTextWaiter(doc, Math.max(resumeWaitMs, 12000));
@@ -3067,6 +3128,7 @@
       var pdfTextBool = getPdfTextLayerText(doc);
       if (pdfTextBool.length > (resumeText || "").length) resumeText = pdfTextBool;
     } catch (_) {}
+    phase.mark("resumeRender");
     // Same chrome-aware retry as the keyword path: if we only captured SR's summary
     // sidebar (not the real PDF), re-activate the resume tab, scroll the viewer to
     // force pdf.js rendering, and poll until real resume text appears.
@@ -3105,6 +3167,7 @@
         log.push({ ok: false, msg: "Resume: PDF text layer never rendered — scan limited to SR profile/skills data (resume-only terms may be missed)" });
       }
     }
+    phase.mark("resumeRetry");
     log.push({ ok: !!(resumeText && resumeText.length >= 50),
                msg: "Resume: " + (resumeText ? resumeText.length : 0) + " chars" +
                     (resumeText && resumeText.length < 200 ? " (sparse)" : "") });
@@ -3118,6 +3181,7 @@
       textParts.push(resumeTabScanBool);
       log.push({ ok: true, msg: "Resume tab full-page: " + resumeTabScanBool.length + " chars" });
     }
+    phase.mark("resumeTabScan");
 
     try { await ensureProfileTabActive(doc, win); } catch (_) {}
     var _ppwB = 0;
@@ -3134,6 +3198,7 @@
     var screeningText = "";
     try { screeningText = getScreeningText(doc, win); } catch (_) {}
     if (screeningText) textParts.push(screeningText);
+    phase.mark("profileTab");
 
     var allText = textParts.join("\n\n").trim();
 
@@ -3151,6 +3216,7 @@
         log.push({ ok: true, msg: "Retry recovered " + allText.length + " chars" });
       }
     }
+    phase.mark("sparseRetry");
 
     var fullPage = "";
     try { fullPage = getFullPageText(doc); } catch (_) {}
@@ -3169,6 +3235,7 @@
     try { excludedBool = getExcludedText(doc); } catch (_) {}
     if (excludedBool) allText = stripExcludedText(allText, excludedBool);
     var textLen = allText.length;
+    phase.mark("textProcessing");
     log.push({ ok: textLen >= 50, msg: "Total text: " + textLen + " chars (header: " + (headerText || "").length + ", resume: " + (resumeText || "").length + ", profile: " + profileText.length + ", screening: " + screeningText.length + ")" });
 
     if (textLen < 50) {
@@ -3196,10 +3263,11 @@
             fullPageLen: (fullPage || "").length, totalLen: textLen,
           },
           durationMs: Math.round(performance.now() - _tBool0),
+          timings: phase.phases,
           log: log.slice(),
         }, diagRawCapture);
       } catch (_) {}
-      return { log: log, moved: false, skipped: true, matchedKeywords: [], hitCount: 0,
+      return { log: log, moved: false, skipped: true, matchedKeywords: [], hitCount: 0, timings: phase.phases,
                textStats: { headerLen: (headerText||"").length, resumeLen: 0, profileLen: 0, totalLen: 0 } };
     }
 
@@ -3267,6 +3335,7 @@
     if (allHitLabels.length) {
       log.push({ ok: true, msg: "Hits: " + allHitLabels.join(", ") });
     }
+    phase.mark("match");
 
     var notesPosted = false;
     // Post on any match, or on zero matches when real text was extracted (records a
@@ -3274,12 +3343,14 @@
     var shouldPostBoolNote = postToNotes && (allHitLabels.length > 0 || textLen >= 200);
     if (shouldPostBoolNote) {
       try { await prepareNotesSection(doc, win, log); } catch (_) {}
+      phase.mark("notesPrepare");
       var boolPrefix = booleanPass ? "[PASS] " : "[FAIL] ";
       try {
         notesPosted = await postKeywordHitsToNotes(doc, win, allHitLabels, allHitLabels.length, totalTerms, log, boolPrefix, { partialScan: !resumeWasRead(resumeText, resumeIsChromeBool) });
       } catch (e) {
         log.push({ ok: false, msg: "Notes post error: " + ((e && e.message) || String(e)) });
       }
+      phase.mark("notesPost");
     }
 
     var notesFailReason = "";
@@ -3315,6 +3386,7 @@
           fullPageLen: (fullPage || "").length, totalLen: textLen,
         },
         durationMs: Math.round(performance.now() - _tBool0),
+        timings: phase.phases,
         log: log.slice(),
         booleanPass: booleanPass,
       }, diagRawCapture);
@@ -3329,6 +3401,7 @@
       notesPosted: notesPosted,
       notesFailReason: notesFailReason,
       booleanPass: booleanPass,
+      timings: phase.phases,
       textStats: { headerLen: (headerText||"").length, resumeLen: (resumeText||"").length,
                    profileLen: profileText.length, totalLen: textLen },
     };
@@ -3478,6 +3551,7 @@
       extractLeafTerms: extractLeafTerms,
       stripExcludedText: stripExcludedText,
       capText: capText,
+      makePhaseTimer: makePhaseTimer,
       saveProfileDiag: saveProfileDiag,
       sanitizeDiagEntry: sanitizeDiagEntry,
       getDiagRawCapture: getDiagRawCapture,
@@ -3503,6 +3577,9 @@
       return collectApplicantClickTargets(document, window);
     };
   }
+  globalThis.__srWaitForResumeText = function (maxMs) {
+    return makeResumeTextWaiter(document, maxMs);
+  };
   globalThis.__srHarvestProfileUrls = function () {
     return harvestProfileUrls(document, window);
   };

@@ -3,6 +3,7 @@ const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   capText,
+  makePhaseTimer,
   saveProfileDiag,
   sanitizeDiagEntry,
   getDiagRawCapture,
@@ -12,6 +13,30 @@ const {
   DIAG_SOURCE_CAP,
 } = require('../keyword-triage-core.js');
 const { resolveKeywordsWithMeta } = require('../keyword-expansions.js');
+
+describe('makePhaseTimer', () => {
+  it('charges the time since the previous mark to each phase, accumulating repeats', () => {
+    let t = 1000;
+    const timer = makePhaseTimer(null, () => t);
+    t += 120.4; timer.mark('header');
+    t += 3000; timer.mark('resumeRender');
+    t += 50; timer.mark('header');
+    assert.deepEqual(timer.phases, { header: 170, resumeRender: 3000 });
+  });
+
+  it('keeps seeded pre-core phases first, rounded, and ignores non-numbers', () => {
+    let t = 0;
+    const timer = makePhaseTimer({ pageLoad: 4200.7, controlsWait: 800, junk: 'x' }, () => t);
+    t += 10; timer.mark('header');
+    assert.deepEqual(Object.entries(timer.phases), [['pageLoad', 4201], ['controlsWait', 800], ['header', 10]]);
+  });
+
+  it('timings survive diag sanitization (they are not candidate data)', () => {
+    const clean = sanitizeDiagEntry({ timestamp: 1, extractedText: 'resume', timings: { pageLoad: 1 } }, false);
+    assert.deepEqual(clean.timings, { pageLoad: 1 });
+    assert.equal(clean.extractedText, '');
+  });
+});
 
 describe('capText', () => {
   it('returns string under cap unchanged', () => {

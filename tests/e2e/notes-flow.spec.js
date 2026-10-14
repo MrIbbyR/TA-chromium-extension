@@ -170,6 +170,60 @@ test("keyword matching finds terms in fixture resume text", async ({ page }) => 
   expect(result.hasOkta).toBe(true);
 });
 
+// ── Resume wait: resolves when the pdf.js text layer renders ──
+// Live SR pages: the resume-viewer selectors also match the summary sidebar, so that
+// text always reads as SR chrome. The waiter used to sit out its whole timeout (12s
+// in runs) even after the PDF rendered; it must resolve on the text layer instead.
+
+const SIDEBAR = "Candidate summary High priority skills 2/8 Other skills 5/33 See details " +
+  "Order assessments No tags added for this candidate ".repeat(3);
+
+async function resumePage(page, { pdfAtMs }) {
+  await page.setContent(`<div id="st-candidateView">
+    <div class="resume-panel"><div class="summary">${SIDEBAR}</div><div class="pdfViewer"></div></div>
+  </div>`);
+  await injectExtensionScripts(page);
+  await page.evaluate((pdfAtMs) => {
+    function addPage(words) {
+      var layer = document.createElement("div");
+      layer.className = "textLayer";
+      for (var i = 0; i < 15; i++) {
+        var s = document.createElement("span");
+        s.textContent = words + " line " + i + " with enough resume text to count";
+        layer.appendChild(s);
+      }
+      document.querySelector(".pdfViewer").appendChild(layer);
+    }
+    // Two pages, rendered lazily like pdf.js: page 2 lands later.
+    pdfAtMs.forEach(function (ms, i) {
+      setTimeout(function () { addPage(i === 0 ? "PyTorch Keras" : "Reinforcement learning Chennai"); }, ms);
+    });
+  }, pdfAtMs);
+}
+
+test("resume wait resolves soon after the pdf text layer renders, with every page", async ({ page }) => {
+  await resumePage(page, { pdfAtMs: [300, 900] });
+  const r = await page.evaluate(async () => {
+    var t0 = performance.now();
+    var text = await globalThis.__srWaitForResumeText(12000);
+    return { ms: performance.now() - t0, text };
+  });
+  expect(r.ms).toBeLessThan(3500);
+  expect(r.text).toContain("PyTorch");
+  expect(r.text).toContain("Chennai");
+  expect(r.text).not.toContain("Candidate summary");
+});
+
+test("resume wait does not resolve on sidebar chrome alone", async ({ page }) => {
+  await resumePage(page, { pdfAtMs: [] });
+  const ms = await page.evaluate(async () => {
+    var t0 = performance.now();
+    await globalThis.__srWaitForResumeText(2000);
+    return performance.now() - t0;
+  });
+  expect(ms).toBeGreaterThanOrEqual(1900);
+});
+
 // ── Hidden textarea should NOT be found as the notes input ──
 
 test("hidden textarea is not returned as visible input", async ({ page }) => {

@@ -27,6 +27,12 @@
     return sleep(jitter(baseMs));
   }
 
+  function roundPhases(p) {
+    var out = {};
+    for (var k in p) if (typeof p[k] === "number") out[k] = Math.round(p[k]);
+    return out;
+  }
+
   function normUrl(u) {
     try {
       var x = new URL(u, location.href);
@@ -207,15 +213,27 @@
     }
   }
 
-  async function runAsParallelWorker() {
+  // DataDome (SR's bot protection) shows its challenge in an iframe from captcha-delivery.com.
+  // The background pauses the run and hands the tab to the recruiter.
+  function botCheckVisible() {
+    try {
+      return !!document.querySelector('iframe[src*="captcha-delivery.com"], #ddChallengeBody');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function runAsParallelWorker(pageLoadMs) {
     if (!isProfilePage()) return false;
     if (window.__srParallelWorkerLock) return false;
     window.__srParallelWorkerLock = true;
 
+    var pre = { pageLoad: pageLoadMs };
+    var _tp = performance.now();
     var isWorker = false;
     try {
       var resp = await new Promise(function (resolve) {
-        chrome.runtime.sendMessage({ type: "srIsParallelWorker" }, function (r) {
+        chrome.runtime.sendMessage({ type: "srIsParallelWorker", botCheck: botCheckVisible() }, function (r) {
           if (chrome.runtime.lastError) resolve(null);
           else resolve(r);
         });
@@ -232,10 +250,13 @@
       cfgData = store.srParallelWorkerConfig;
     } catch (_) {}
     if (!cfgData) { window.__srParallelWorkerLock = false; return false; }
+    pre.checkIn = performance.now() - _tp; _tp = performance.now();
 
     await sleepJitter(Math.max(1500, parseInt(cfgData.resumeWaitMs, 10) || 3000));
+    pre.preStartWait = performance.now() - _tp; _tp = performance.now();
 
     var controlsOk = await waitUntilSrControlsReady(12000);
+    pre.controlsWait = performance.now() - _tp;
     if (!controlsOk) {
       try {
         chrome.runtime.sendMessage(
@@ -245,6 +266,8 @@
             matchedKeywords: [],
             notesPosted: false,
             error: "controls_timeout",
+            botCheck: botCheckVisible(),
+            timings: roundPhases(pre),
           },
           function () {
             chrome.runtime.lastError;
@@ -260,7 +283,7 @@
         typeof globalThis.__srKeywordTriageRunMulti === "function"
           ? globalThis.__srKeywordTriageRunMulti
           : globalThis.__srKeywordTriageRun;
-      result = await runner(cfgData);
+      result = await runner(Object.assign({}, cfgData, { __prePhases: pre }));
     } catch (e) {
       result = {
         hitCount: 0,
@@ -269,6 +292,7 @@
         log: [{ ok: false, msg: String((e && e.message) || e) }],
       };
     }
+    var timings = Object.assign(roundPhases(pre), result.timings || {});
 
     var workerNotesFailed = (result.hitCount || 0) > 0 && !result.notesPosted;
     var workerNoHits = (result.hitCount || 0) === 0;
@@ -293,6 +317,8 @@
             notesFailReason: result.notesFailReason || "",
             textStats: result.textStats || null,
             diagLog: workerDiagLog.length ? workerDiagLog : undefined,
+            botCheck: botCheckVisible(),
+            timings: timings,
           },
           function (r) {
             if (chrome.runtime.lastError) resolve(null);
@@ -311,9 +337,11 @@
   async function main() {
     if (!/smartrecruiters\.com/i.test(location.hostname)) return;
     if (window.top !== window.self) return;
+    // performance.now() is relative to this document's navigation start.
+    var pageLoadMs = performance.now();
 
     try {
-      var wasWorker = await runAsParallelWorker();
+      var wasWorker = await runAsParallelWorker(pageLoadMs);
       if (wasWorker) return;
     } catch (_) {}
 
@@ -385,11 +413,14 @@
       if (!isProfilePage()) return;
 
       var _qT0 = performance.now();
+      var qPre = { pageLoad: pageLoadMs };
       var cfgWait = state.config && state.config.resumeWaitMs;
       var delay = Math.max(400, parseInt(state.initialDelayMs, 10) || parseInt(cfgWait, 10) || 2000);
       await sleep(delay);
+      qPre.preStartWait = performance.now() - _qT0;
 
       var controlsOk = await waitUntilSrControlsReady(queueReadyCap);
+      qPre.controlsWait = performance.now() - _qT0 - qPre.preStartWait;
       if (__aborted) { await __srSessionRemove(KEY); return; }                 // P0-2: was sessionStorage.removeItem
       if (!controlsOk) {
         showToast("Keyword search: pipeline UI not ready — check network.");
@@ -426,7 +457,7 @@
         var runner = typeof globalThis.__srKeywordTriageRunMulti === "function"
           ? globalThis.__srKeywordTriageRunMulti
           : globalThis.__srKeywordTriageRun;
-        result = await runner(state.config || {});
+        result = await runner(Object.assign({}, state.config || {}, { __prePhases: qPre }));
       } catch (e) {
         result = {
           log: [{ ok: false, msg: String((e && e.message) || e) }],
@@ -464,6 +495,7 @@
         textStats: result.textStats || null,
         totalMs: Math.round(performance.now() - _qT0),
         coreMs: result.totalMs || null,
+        timings: Object.assign(roundPhases(qPre), result.timings || {}),
         diagLog: diagLog.length ? diagLog : undefined,
         clickIndex: kind === "click" ? state.clickIndex : undefined,
       });

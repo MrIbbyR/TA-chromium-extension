@@ -165,8 +165,43 @@ const countIn = (q, state) => q.order.filter((u) => q.items[u].state === state).
 const nextPending = (q) => q.order.find((u) => q.items[u].state === "pending") || null;
 const workTimeout = (q) => WORK_TIMEOUT_MS[q.feature] || WORK_TIMEOUT_MS.keyword;
 
+// ── Pace limit ──
+// One slot clock (q.nextSlotAt, persisted) spaces every profile load across all worker
+// tabs, so 3 workers don't mean 3× the request rate DataDome sees. The popup can pass
+// `profilesPerMinute`; the gap between slots is jittered like every other delay.
+const DEFAULT_PROFILES_PER_MINUTE = 6;
+const paceMs = (q) => 60000 / (q.profilesPerMinute || DEFAULT_PROFILES_PER_MINUTE);
+
+// Reserve the next load slot at least minDelayMs from now; returns the wait in ms.
+function takeSlot(q, minDelayMs) {
+  const now = Date.now();
+  const at = Math.max(now + minDelayMs, q.nextSlotAt || 0);
+  q.nextSlotAt = at + jitter(paceMs(q));
+  return at - now;
+}
+
+// Send a leased worker tab to its URL at its slot. `navAt` stays on the item until the
+// navigation is issued, so the watchdog can issue it if an SW restart drops the timer.
+function scheduleNav(q, url, tabId, minDelayMs) {
+  const item = q.items[url];
+  const delay = takeSlot(q, minDelayMs);
+  item.navAt = Date.now() + delay;
+  item.navDelayMs = delay;
+  item.leaseUntil = item.navAt + START_TIMEOUT_MS; // waiting for a slot isn't hanging
+  setTimeout(() => withQueue((ctx) => kickNav(ctx.q, tabId, url)), delay);
+}
+
+function kickNav(q, tabId, url) {
+  const l = leaseOf(q, tabId);
+  if (!l || l.url !== url || l.item.navAt == null || q.pausedSince) return;
+  l.item.navAt = null;
+  navigateWorker(tabId, url);
+}
+
 function lease(q, url, tabId) {
   const item = q.items[url];
+  delete item.navDelayMs;
+  delete item.navAt;
   item.state = "leased";
   item.tabId = tabId;
   item.started = false;
@@ -195,7 +230,158 @@ function shapeResult(feature, url, m) {
     notesFailReason: m.notesFailReason || "",
     textStats: m.textStats || null,
     diagLog: m.diagLog || undefined,
+    error: m.error || undefined, // e.g. controls_timeout: the page never loaded, nothing was scanned
+    timings: phaseTimings(m.timings),
   };
+}
+
+// Per-phase durations (ms) from the worker — numbers only, so nothing else rides along.
+function phaseTimings(t) {
+  if (!t || typeof t !== "object") return undefined;
+  const out = {};
+  for (const [k, v] of Object.entries(t).slice(0, 30)) {
+    if (/^[A-Za-z]{1,32}$/.test(k) && Number.isFinite(v)) out[k] = Math.round(v);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+// ── Logged out mid-run: pause, don't fail ──
+// Signing out of SmartRecruiters sends every SR tab — worker tabs included — to the
+// sign-in page. That says nothing about the profiles, so the run pauses (no launches,
+// no lease expiry, no breaker) and resumes as soon as a worker tab is back on a normal
+// SR page after login. Still logged out after LOGOUT_WAIT_MAX_MS → stop ("logged_out").
+const SIGN_IN_RE = /^https?:\/\/[^/]*smartrecruiters\.com\/account\/(sign-?in|login)\b/i;
+const LOGOUT_WAIT_MAX_MS = 15 * 60 * 1000;
+const isSignInUrl = (u) => SIGN_IN_RE.test(u || "");
+const isSrUrl = (u) => /^https?:\/\/[^/]*smartrecruiters\.com\//i.test(u || "");
+
+function pauseForLogout(q) {
+  if (q.pausedSince) return;
+  q.pausedSince = Date.now();
+  q.pauseReason = "logged_out";
+  showNotification(
+    "srLoggedOut_" + q.pausedSince,
+    "NIQ TA Helper — Paused: logged out",
+    "SmartRecruiters logged you out. Log back in within 15 minutes and the run continues where it left off."
+  );
+}
+
+function resumeAfterLogin(q) {
+  if (!q.pausedSince) return;
+  q.pausedSince = null;
+  q.pauseReason = null;
+  // Each in-flight profile restarts from a fresh page load: give it a new start window.
+  // A tab that doesn't come back from the sign-in page is reclaimed by the watchdog.
+  const now = Date.now();
+  for (const url of q.order) {
+    const item = q.items[url];
+    if (item.state === "leased") { item.started = false; item.leaseUntil = now + START_TIMEOUT_MS; }
+  }
+  scheduleFill(q);
+}
+
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (!change.url) return;
+  withQueue((ctx) => {
+    const q = ctx.q;
+    if (!q || q.stopped || !leaseOf(q, tabId)) return;
+    if (isSignInUrl(change.url)) pauseForLogout(q);
+    else if (q.pausedSince && q.pauseReason !== "bot_check" && isSrUrl(change.url)) resumeAfterLogin(q);
+  });
+});
+
+// ── Bot check mid-run: pause, hand it to the recruiter ──
+// DataDome (SR's bot protection) can put its challenge on any page load or over a page
+// mid-profile. Workers report it (`botCheck` on check-in / srWorkerDone). The run pauses
+// — no new loads, no lease expiry, no breaker — and that tab is brought to the front so
+// the recruiter can solve it. We never interact with the challenge ourselves.
+// Resume: the paused tab checks in clean (DataDome reloads the page once solved), or the
+// watchdog finds the challenge gone. Unsolved after BOT_CHECK_WAIT_MAX_MS → stop ("bot_check").
+const BOT_CHECK_WAIT_MAX_MS = 15 * 60 * 1000;
+
+function pauseForBotCheck(q, tabId) {
+  const l = leaseOf(q, tabId);
+  // Whatever this tab was doing is suspect: reload its profile after the pause.
+  if (l) { l.item.started = false; l.item.navAt = null; }
+  if (q.pausedSince) return;
+  q.pausedSince = Date.now();
+  q.pauseReason = "bot_check";
+  q.pauseTabId = tabId;
+  chrome.tabs.update(tabId, { active: true }).then(
+    (tab) => tab && chrome.windows.update(tab.windowId, { focused: true }),
+  ).catch(() => {});
+  showNotification(
+    "srBotCheck_" + q.pausedSince,
+    "NIQ TA Helper — Paused: bot check",
+    "SmartRecruiters is asking you to confirm you're human. Solve it in the tab that just opened; the run continues by itself. It stops if not solved within 15 minutes."
+  );
+}
+
+function resumeAfterBotCheck(q, checkedInTabId) {
+  q.pausedSince = null;
+  q.pauseReason = null;
+  q.pauseTabId = null;
+  const now = Date.now();
+  for (const url of q.order) {
+    const item = q.items[url];
+    if (item.state !== "leased") continue;
+    if (item.started) item.leaseUntil = Math.max(item.leaseUntil, now + workTimeout(q));
+    // Not started: idle, or on the challenge page — reload its profile at its pace slot.
+    else if (item.tabId !== checkedInTabId) scheduleNav(q, url, item.tabId, jitter(1500));
+  }
+  scheduleFill(q);
+}
+
+// Runs in the paused tab: is DataDome's challenge still there?
+function botCheckShownInPage() {
+  return !!document.querySelector('iframe[src*="captcha-delivery.com"], #ddChallengeBody');
+}
+
+async function botCheckStillShown(tabId) {
+  try {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: botCheckShownInPage });
+    return !!(r && r.result);
+  } catch (_) {
+    return false; // tab gone or not scriptable: resume — the next page load reports it again
+  }
+}
+
+// ── Circuit breaker ──
+// BREAKER_TRIP_COUNT profiles in a row failing for the same reason means SmartRecruiters
+// itself is wrong (logged out, bot check, notes UI changed): stop instead of burning
+// through the list. The streak lives on the queue, so it survives an SW restart.
+const BREAKER_TRIP_COUNT = 3;
+const BREAKER_LABELS = {
+  controls_timeout: "page never finished loading",
+  timeout: "tab hung",
+  notes_failed: "note not posted",
+  logged_out: "logged out of SmartRecruiters",
+  bot_check: "SmartRecruiters bot check not solved",
+};
+// Stops from a pause that ran out, not from BREAKER_TRIP_COUNT failures in a row.
+const PAUSE_STOP_REASONS = ["logged_out", "bot_check"];
+
+// Why a finished URL counts against the breaker, or null (success — resets the streak).
+// tab_closed never gets here: the recruiter's own action neither counts nor resets.
+function breakerReason(result) {
+  if (result.error) return result.error;
+  if (result.hitCount > 0 && !result.notesPosted) return "notes_failed";
+  return null;
+}
+
+// Record a finished URL's result; returns true if the breaker tripped (run is stopped).
+function recordOutcome(ctx, result) {
+  const q = ctx.q;
+  const reason = breakerReason(result);
+  const b = q.breaker || (q.breaker = { reason: null, count: 0 });
+  if (reason === null) { b.reason = null; b.count = 0; return false; }
+  if (b.reason === reason) b.count++;
+  else { b.reason = reason; b.count = 1; }
+  if (b.count < BREAKER_TRIP_COUNT) return false;
+  q.stopped = true;
+  q.trippedReason = reason;
+  finishIfDrained(ctx, { stopped: true });
+  return true;
 }
 
 const closeTab = (tabId) => { if (tabId != null) chrome.tabs.remove(tabId).catch(() => {}); };
@@ -204,9 +390,12 @@ const closeTab = (tabId) => { if (tabId != null) chrome.tabs.remove(tabId).catch
 function launchWorker() {
   return withQueue(async (ctx) => {
     const q = ctx.q;
-    if (!q || q.stopped || countIn(q, "leased") >= q.workers) return;
+    if (!q || q.stopped || q.pausedSince || countIn(q, "leased") >= q.workers) return;
     const url = nextPending(q);
     if (!url) { finishIfDrained(ctx); return; }
+    const wait = (q.nextSlotAt || 0) - Date.now();
+    if (wait > 0) { setTimeout(launchWorker, wait); return; }
+    q.nextSlotAt = Date.now() + jitter(paceMs(q));
     let tab;
     try {
       tab = await chrome.tabs.create({ url, active: false });
@@ -265,37 +454,64 @@ function finishIfDrained(ctx, { stopped = false } = {}) {
     .map((item) => item.result);
 
   const finishedAt = Date.now();
-  // Failed URLs (tab_closed / timeout) were never scanned — report them apart, not as misses.
+  // Failed URLs (tab_closed / timeout / controls_timeout) were never scanned — report
+  // them apart, not as misses.
   const failed = results.filter((r) => r.error).length;
   const scanned = results.length - failed;
   const plural = (n) => n + " profile" + (n !== 1 ? "s" : "");
-  if (q.feature === "salary") {
+  const salary = q.feature === "salary";
+  const lastRun = { finishedAt, results, parallel: true, total: q.order.length, stoppedReason: q.trippedReason };
+  chrome.storage.local
+    .set({ [salary ? "salaryTriageLastRun" : "keywordTriageLastRun"]: lastRun })
+    .catch(() => {});
+  if (q.trippedReason) {
+    const label = BREAKER_LABELS[q.trippedReason] || q.trippedReason;
+    showNotification(
+      "srParallelTripped_" + finishedAt,
+      "NIQ TA Helper — Run stopped early",
+      (PAUSE_STOP_REASONS.includes(q.trippedReason)
+        ? "Stopped: " + label + " for 15 minutes. "
+        : "Stopped after " + BREAKER_TRIP_COUNT + " profiles in a row failed (" + label + "). ") +
+        results.length + " of " + q.order.length + " processed — check SmartRecruiters, then re-run."
+    );
+  } else if (salary) {
     const moved = results.filter((r) => r.moved).length;
-    chrome.storage.local
-      .set({ salaryTriageLastRun: { finishedAt, results, parallel: true } })
-      .catch(() => {});
     showNotification(
       "srParallelDone_" + finishedAt,
       "NIQ TA Helper — Cost assist done",
       plural(moved) + " moved forward out of " + scanned + " screened." +
-        (failed ? " " + failed + " could not be screened (tab closed or timed out)." : "")
+        (failed ? " " + failed + " could not be screened (see the popup for why)." : "")
     );
   } else {
     const matched = results.filter((r) => r.hitCount > 0).length;
-    chrome.storage.local
-      .set({ keywordTriageLastRun: { finishedAt, results, parallel: true } })
-      .catch(() => {});
     showNotification(
       "srParallelDone_" + finishedAt,
       "NIQ TA Helper — Keyword search done",
       plural(matched) + " matched out of " + scanned + " scanned." +
-        (failed ? " " + failed + " could not be scanned (tab closed or timed out)." : "")
+        (failed ? " " + failed + " could not be scanned (see the popup for why)." : "")
     );
   }
   playBeepInSRTab(q.returnUrl || "");
+  pruneProfileDiags();
   ctx.q = null;
   chrome.alarms.clear(WATCHDOG_ALARM).catch(() => {});
   return true;
+}
+
+// Per-profile diagnostics (lastRunDiag_<ts>, candidate PII) are capped at 20. The worker
+// trims after each save, but a worker tab closed right after its last profile can die
+// before its trim runs — so trim once more here, where nothing closes under us.
+const DIAG_PREFIX = "lastRunDiag_";
+const DIAG_MAX_ENTRIES = 20;
+function pruneProfileDiags() {
+  chrome.storage.local.get(null).then((all) => {
+    const ts = (k) => parseInt(k.slice(DIAG_PREFIX.length), 10) || 0;
+    const extra = Object.keys(all || {})
+      .filter((k) => k.startsWith(DIAG_PREFIX))
+      .sort((a, b) => ts(b) - ts(a))
+      .slice(DIAG_MAX_ENTRIES);
+    if (extra.length) return chrome.storage.local.remove(extra);
+  }).catch(() => {});
 }
 
 function startQueue(feature, message) {
@@ -303,10 +519,14 @@ function startQueue(feature, message) {
     abandonQueue(ctx);
     const urls = [...new Set(message.urls || [])];
     const workers = Math.max(1, Math.min(5, message.workers || 2));
+    const ppm = Number(message.profilesPerMinute);
+    const profilesPerMinute = Number.isFinite(ppm) && ppm > 0 ? Math.min(30, ppm) : DEFAULT_PROFILES_PER_MINUTE;
     ctx.q = {
       runId: "r" + Date.now(),
       feature,
       workers,
+      profilesPerMinute,
+      nextSlotAt: 0,
       returnUrl: message.returnUrl || "",
       startedAt: Date.now(),
       stopped: false,
@@ -316,46 +536,64 @@ function startQueue(feature, message) {
     // Workers read their config from here when they check in.
     await chrome.storage.local.set({ srParallelWorkerConfig: message.config || {} }).catch(() => {});
     chrome.alarms.create(WATCHDOG_ALARM, { periodInMinutes: 0.5 });
-    if (!urls.length) { finishIfDrained(ctx); return { queued: 0, workers }; }
-    // Stagger the first tabs (anti-detection): one now, the rest ~2.8s apart.
+    if (!urls.length) { finishIfDrained(ctx); return { queued: 0, workers, profilesPerMinute }; }
+    // Stagger the first tabs (anti-detection); launchWorker also waits for its pace slot.
     let delay = 0;
     for (let i = 0; i < Math.min(workers, urls.length); i++) {
       setTimeout(launchWorker, delay);
       delay += jitter(2800);
     }
-    return { queued: urls.length, workers };
+    return { queued: urls.length, workers, profilesPerMinute };
   });
 }
 
-function handleWorkerCheckIn(tabId) {
+function handleWorkerCheckIn(tabId, pageUrl, botCheck) {
   return withQueue((ctx) => {
     const q = ctx.q;
     const l = q && !q.stopped ? leaseOf(q, tabId) : null;
     if (!l) return { active: false, feature: null };
+    // On the sign-in page there's no profile to scan: pause, and keep the worker idle.
+    if (isSignInUrl(pageUrl)) { pauseForLogout(q); return { active: false, feature: null }; }
+    if (botCheck) { pauseForBotCheck(q, tabId); return { active: false, feature: null }; }
+    if (q.pausedSince && q.pauseReason === "bot_check") {
+      // Only the challenge tab coming back clean ends the pause; other tabs wait and
+      // are reloaded on resume.
+      if (q.pauseTabId !== tabId) return { active: false, feature: null };
+      resumeAfterBotCheck(q, tabId);
+    }
+    l.item.navAt = null;
     l.item.started = true;
     l.item.leaseUntil = Date.now() + workTimeout(q);
     return { active: true, feature: q.feature };
   });
 }
 
-function handleWorkerDone(tabId, message) {
+function handleWorkerDone(tabId, message, pageUrl) {
   return withQueue((ctx) => {
     const q = ctx.q;
+    // A report from the sign-in page is about the logout, not the profile.
+    if (isSignInUrl(pageUrl)) { if (q && leaseOf(q, tabId)) pauseForLogout(q); return { next: false }; }
     const l = leaseOf(q, tabId);
     // Only the page that checked in for this lease may complete it. Anything else — a
     // duplicate message, a tab whose lease the watchdog reclaimed, a tab from an older
     // run — is ignored, so a URL is never recorded twice or with another URL's result.
     if (!l || !l.item.started) return { next: false };
-    release(q, l.url, "done", { result: shapeResult(q.feature, l.url, message) });
+    // The challenge covered this page mid-profile: its result can't be trusted.
+    if (message.botCheck) { pauseForBotCheck(q, tabId); return { next: false }; }
+    const result = shapeResult(q.feature, l.url, message);
+    if (result.timings && l.item.navDelayMs != null) result.timings = { navDelay: l.item.navDelayMs, ...result.timings };
+    release(q, l.url, "done", { result });
+    if (recordOutcome(ctx, result)) { closeTab(tabId); return { next: false }; }
 
-    const nextUrl = q.stopped ? null : nextPending(q);
+    // Paused for a bot check: load nothing new. The slot is refilled on resume.
+    const nextUrl = q.stopped || q.pauseReason === "bot_check" ? null : nextPending(q);
     if (!nextUrl) {
       closeTab(tabId);
       finishIfDrained(ctx);
       return { next: false };
     }
     lease(q, nextUrl, tabId);
-    setTimeout(() => navigateWorker(tabId, nextUrl), message.notesPosted ? jitter(2400) : jitter(1600));
+    scheduleNav(q, nextUrl, tabId, message.notesPosted ? jitter(2400) : jitter(1600));
     scheduleFill(q);
     return { next: true, url: nextUrl };
   });
@@ -383,18 +621,36 @@ function stopQueue() {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== WATCHDOG_ALARM) return;
-  withQueue((ctx) => {
+  withQueue(async (ctx) => {
     const q = ctx.q;
     if (!q) { chrome.alarms.clear(WATCHDOG_ALARM).catch(() => {}); return; }
     const now = Date.now();
     if (now - q.startedAt > STALE_QUEUE_MS) { abandonQueue(ctx); return; }
+    if (q.pausedSince) {
+      const botCheck = q.pauseReason === "bot_check";
+      if (now - q.pausedSince >= (botCheck ? BOT_CHECK_WAIT_MAX_MS : LOGOUT_WAIT_MAX_MS)) {
+        q.stopped = true;
+        q.trippedReason = botCheck ? "bot_check" : "logged_out";
+        finishIfDrained(ctx, { stopped: true });
+        return;
+      }
+      if (botCheck && !(await botCheckStillShown(q.pauseTabId))) resumeAfterBotCheck(q);
+      return; // leases can't expire while we wait for the recruiter
+    }
+    // Navigations whose timer died with a stopped service worker.
+    for (const url of q.order) {
+      const item = q.items[url];
+      if (item.state === "leased" && item.navAt != null && item.navAt <= now) kickNav(q, item.tabId, url);
+    }
     for (const url of q.order) {
       const item = q.items[url];
       if (item.state !== "leased" || item.leaseUntil > now) continue;
       const tabId = item.tabId;
-      if (item.attempts < MAX_ATTEMPTS) release(q, url, "pending");
-      else release(q, url, "failed", { result: { url, error: "timeout" } });
       closeTab(tabId);
+      if (item.attempts < MAX_ATTEMPTS) { release(q, url, "pending"); continue; }
+      const result = { url, error: "timeout" };
+      release(q, url, "failed", { result });
+      if (recordOutcome(ctx, result)) return;
     }
     if (!finishIfDrained(ctx)) scheduleFill(q);
   });
@@ -620,13 +876,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "srStartParallelKeywordQueue" || message.type === "srStartParallelSalaryQueue") {
     const feature = message.type === "srStartParallelSalaryQueue" ? "salary" : "keyword";
-    startQueue(feature, message).then(({ queued, workers }) =>
-      sendResponse({ ok: true, queued, workers, feature }));
+    startQueue(feature, message).then(({ queued, workers, profilesPerMinute }) =>
+      sendResponse({ ok: true, queued, workers, profilesPerMinute, feature }));
+    return true;
+  }
+
+  if (message.type === "srQueueStatus") {
+    // Popup preflight: is a run going? (Starting a new one replaces it.)
+    withQueue((ctx) => (ctx.q && !ctx.q.stopped ? { running: true, feature: ctx.q.feature } : { running: false }))
+      .then(sendResponse);
     return true;
   }
 
   if (message.type === "srWorkerDone") {
-    handleWorkerDone(sender.tab && sender.tab.id, message).then(sendResponse);
+    handleWorkerDone(sender.tab && sender.tab.id, message, sender.tab && sender.tab.url).then(sendResponse);
     return true;
   }
 
@@ -658,7 +921,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "srIsParallelWorker") {
     // Also the worker's check-in: it starts the lease's work timer. `feature` lets each
     // autorun (salary and keyword both run on every profile page) claim only its own tabs.
-    handleWorkerCheckIn(sender.tab && sender.tab.id).then(sendResponse);
+    handleWorkerCheckIn(sender.tab && sender.tab.id, sender.tab && sender.tab.url, !!message.botCheck).then(sendResponse);
     return true;
   }
 });
@@ -671,8 +934,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   withQueue((ctx) => {
     const l = leaseOf(ctx.q, tabId);
     if (!l) return; // not a worker, or one we closed ourselves (lease already released)
+    if (ctx.q.pausedSince) {
+      // Closed while logged out (by the recruiter or SR's sign-out): nothing was scanned.
+      release(ctx.q, l.url, "pending", { attempts: Math.max(0, l.item.attempts - 1) });
+      return;
+    }
     if (l.item.started) {
-      // Closed mid-profile — report it, don't retry (the recruiter may have closed it on purpose).
+      // Closed mid-profile — report it, don't retry (the recruiter may have closed it on
+      // purpose). Not passed to recordOutcome: it says nothing about SmartRecruiters' health.
       release(ctx.q, l.url, "failed", { result: { url: l.url, error: "tab_closed" } });
     } else {
       // Closed between profiles — nothing was processed, so the URL goes back in the queue.

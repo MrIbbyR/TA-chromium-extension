@@ -9,16 +9,17 @@
     if (!(typeof chrome !== "undefined" && chrome.storage && chrome.storage.local)) return;
     const DIAG_PREFIX = "lastRunDiag_";
     const DIAG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+    const DIAG_MAX_ENTRIES = 20;
     const LASTRUN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
     const now = Date.now();
     const all = await chrome.storage.local.get(null);
     const toRemove = [];
-    for (const k of Object.keys(all)) {
-      if (k.indexOf(DIAG_PREFIX) === 0) {
-        const ts = parseInt(k.slice(DIAG_PREFIX.length), 10) || 0;
-        if (ts < now - DIAG_MAX_AGE_MS) toRemove.push(k);
-      }
-    }
+    const diagTs = (k) => parseInt(k.slice(DIAG_PREFIX.length), 10) || 0;
+    // Newest first; beyond the count cap or past the TTL → remove.
+    const diagKeys = Object.keys(all).filter((k) => k.indexOf(DIAG_PREFIX) === 0).sort((a, b) => diagTs(b) - diagTs(a));
+    diagKeys.forEach((k, i) => {
+      if (i >= DIAG_MAX_ENTRIES || diagTs(k) < now - DIAG_MAX_AGE_MS) toRemove.push(k);
+    });
     for (const k of ["keywordTriageLastRun", "salaryTriageLastRun"]) {
       const rec = all[k];
       if (rec && typeof rec.finishedAt === "number" && rec.finishedAt < now - LASTRUN_MAX_AGE_MS) {
@@ -251,6 +252,42 @@ async function getSmartRecruitersTab() {
     return null;
   }
   return tab;
+}
+
+// ── Preflight before a parallel run (rules in run-preflight.js) ──
+// Warns, never blocks: clicking the same Go button again within 60s starts anyway.
+const preflightOverrideUntil = {}; // feature -> timestamp
+async function preflightAllowsStart(feature, tab, logFn, setStatus) {
+  const facts = { pageUrl: tab.url || "", loginFormVisible: false, botCheckVisible: false,
+                  runInProgress: false, lastRun: null, now: Date.now() };
+  try {
+    const [probe] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: false },
+      func: () => ({
+        loginFormVisible: !!document.querySelector('input[type="password"]'),
+        // DataDome (SR's bot protection) serves its challenge from captcha-delivery.com.
+        botCheckVisible: !!document.querySelector('iframe[src*="captcha-delivery.com"], iframe[src*="captcha"], #ddChallengeBody'),
+      }),
+    });
+    Object.assign(facts, (probe && probe.result) || {});
+  } catch (_) {}
+  try { facts.runInProgress = !!(await chrome.runtime.sendMessage({ type: "srQueueStatus" }))?.running; } catch (_) {}
+  try {
+    const key = feature === "salary" ? "salaryTriageLastRun" : "keywordTriageLastRun";
+    facts.lastRun = (await chrome.storage.local.get(key))[key] || null;
+  } catch (_) {}
+
+  const warnings = preflightWarnings(facts);
+  if (!warnings.length) return true;
+  if (Date.now() < (preflightOverrideUntil[feature] || 0)) {
+    delete preflightOverrideUntil[feature];
+    return true;
+  }
+  preflightOverrideUntil[feature] = Date.now() + 60 * 1000;
+  for (const w of warnings) logFn("⚠", w);
+  logFn("⚠", "Click the same Go button again within 60s to start anyway.");
+  setStatus("error", "Check before starting");
+  return false;
 }
 
 async function ensureSalaryCore(tabId) {
@@ -629,6 +666,10 @@ async function handleSalaryGo(workers) {
     return;
   }
 
+  salaryStatusBox.classList.add("visible");
+  salaryLogEl.innerHTML = "";
+  if (!(await preflightAllowsStart("salary", tab, salaryLog, setSalaryStatus))) return;
+
   setSalaryGoDisabled(true);
   salaryStatusBox.classList.add("visible");
   salaryLogEl.innerHTML = "";
@@ -675,6 +716,7 @@ async function handleSalaryGo(workers) {
     });
     if (resp?.ok) {
       salaryLog("✓", "Dispatched " + urls.length + " profiles across " + workers + " workers.");
+      if (resp.profilesPerMinute) salaryLog("·", "Paced to about " + resp.profilesPerMinute + " profiles a minute in total.");
       salaryLog("✓", cfg.dryRun ? "Dry run: reading screening answers only (never clicks Move)." : "Workers run in the background — results saved when finished.");
       setSalaryStatus("salary-done", "Cost assist running (" + workers + "× workers)");
     } else {
@@ -1240,6 +1282,10 @@ async function handleKwGo(workers) {
     return;
   }
 
+  kwStatusBox.classList.add("visible");
+  kwLogEl.innerHTML = "";
+  if (!(await preflightAllowsStart("keyword", tab, kwLog, setKwStatus))) return;
+
   setKwGoDisabled(true);
   kwStatusBox.classList.add("visible");
   kwLogEl.innerHTML = "";
@@ -1285,6 +1331,7 @@ async function handleKwGo(workers) {
     if (resp?.ok) {
       const modeLabel = cfg.mode === "boolean" ? "Boolean search" : "Keyword search";
       kwLog("✓", "Dispatched " + urls.length + " profiles across " + workers + " workers.");
+      if (resp.profilesPerMinute) kwLog("·", "Paced to about " + resp.profilesPerMinute + " profiles a minute in total.");
       setKwStatus("salary-done", modeLabel + " running (" + workers + "× workers)");
     } else {
       kwLog("✗", resp?.error || "Failed to start parallel queue.");
@@ -1343,11 +1390,18 @@ if (btnKwLastRun) {
       kwLog("✓", `Last run: ${results.length} profiles @ ${time}${timeSummary}`);
       kwLog(sum.matched > 0 ? "✓" : "✗",
         `${sum.matched} matched  ·  ${sum.notesPosted} notes posted  ·  ${sum.moved} moved fwd  ·  ${sum.skipped} skipped`);
+      const stopped = stoppedEarlyLine(run);
+      if (stopped) kwLog("⚠", stopped);
       if (sum.failed > 0) {
-        kwLog("⚠", `${sum.failed} profile${sum.failed > 1 ? "s" : ""} not scanned (tab closed or timed out) — re-run ${sum.failed > 1 ? "them" : "it"}`);
+        kwLog("⚠", `${sum.failed} profile${sum.failed > 1 ? "s" : ""} not scanned (see ⚠ lines below) — re-run ${sum.failed > 1 ? "them" : "it"}`);
       }
       if (sum.notesFailed > 0) {
         kwLog("✗", `${sum.notesFailed} note${sum.notesFailed > 1 ? "s" : ""} failed to post — see ↳ details below`);
+      }
+      const [timingHead, ...timingRows] = formatPhaseTimings(summarizePhaseTimings(results));
+      if (timingHead) {
+        kwLog("·", timingHead);
+        for (const row of timingRows) kwLogSub(row);
       }
 
       for (const r of results.slice(0, 40)) {
@@ -1415,6 +1469,9 @@ if (btnKwDiagHistory && kwDiagPanel) {
         <div style="color:var(--muted);font-size:11px">
           input: ${escapeHtml(entry.userInput||"")} · type: ${escapeHtml(entry.type||"")} · ${entry.durationMs||0}ms
         </div>
+        ${entry.timings ? `<div style="color:var(--muted);font-size:11px">
+          timings: ${escapeHtml(Object.entries(entry.timings).map(([k, v]) => `${k} ${v}ms`).join(" · "))}
+        </div>` : ""}
         <details style="margin-top:6px">
           <summary style="cursor:pointer;color:var(--accent)">extractedText (${(entry.extractedText||"").length} chars)</summary>
           <textarea readonly style="width:100%;height:180px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;border:1px solid var(--border);padding:4px;margin-top:4px">${escapeHtml(entry.extractedText||"")}</textarea>
