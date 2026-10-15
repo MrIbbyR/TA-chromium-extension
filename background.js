@@ -1,5 +1,9 @@
 // background.js — service worker: parallel queue coordinator (leases + watchdog) + tab cleanup (MV3)
 
+// SmartRecruiters selectors (globalThis.__SR). Injected page functions can't see this
+// worker's globals, so they receive their selector through executeScript `args`.
+importScripts("sr-selectors.js");
+
 // GDPR: queue state lives in chrome.storage.session — extension-isolated, in-memory,
 // cleared when the browser closes. Content scripts are "untrusted" contexts, so they
 // can only read/write session storage after the access level is widened to include
@@ -339,8 +343,8 @@ function resumeAfterBotCheck(q, checkedInTabId) {
 }
 
 // Runs in the paused tab: is DataDome's challenge still there?
-function botCheckShownInPage() {
-  return !!document.querySelector('iframe[src*="captcha-delivery.com"], #ddChallengeBody');
+function botCheckShownInPage(botCheckSel) {
+  return !!document.querySelector(botCheckSel);
 }
 
 // Runs in the profile page's MAIN world — CKEditor lives there, not in the content
@@ -363,7 +367,7 @@ function compactNoteBreaksInPage() {
 
 async function botCheckStillShown(tabId) {
   try {
-    const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: botCheckShownInPage });
+    const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: botCheckShownInPage, args: [__SR.sel.botCheck] });
     return !!(r && r.result);
   } catch (_) {
     return false; // tab gone or not scriptable: resume — the next page load reports it again
@@ -864,9 +868,9 @@ const resumeCapture = {
 
 // Injected into the resume tab (all frames). Prefers pdf.js text-layer spans, else
 // a shadow-piercing text walk. Self-contained — runs in the page's isolated world.
-function _extractResumeTextInPage() {
+function _extractResumeTextInPage(spanSel) {
   try {
-    var spans = document.querySelectorAll('.textLayer span, [class*="textLayer"] span');
+    var spans = document.querySelectorAll(spanSel);
     if (spans.length > 20) {
       var parts = [];
       for (var i = 0; i < spans.length; i++) { var t = (spans[i].textContent || "").trim(); if (t) parts.push(t); }
@@ -908,6 +912,7 @@ async function captureResumeFromTab(workerTabId, resumeTabId) {
       results = await chrome.scripting.executeScript({
         target: { tabId: resumeTabId, allFrames: true },
         func: _extractResumeTextInPage,
+        args: [__SR.sel.pdfTextSpans],
       });
     } catch (_) {}
     for (const r of results || []) { if (r && r.result && r.result.length > text.length) text = r.result; }

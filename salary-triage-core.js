@@ -76,8 +76,12 @@
     "gaji",
   ];
 
-  const SCREENING_TAB_ID = "st-screening";
-  const MOVE_FORWARD_ID = "st-moveForward";
+  // SmartRecruiters selectors and element ids live in sr-selectors.js, which loads first.
+  const SR = globalThis.__SR || (typeof require === "function" ? require("./sr-selectors.js").SR : null);
+  if (!SR) throw new Error("sr-selectors.js must load before salary-triage-core.js");
+
+  const SCREENING_TAB_ID = SR.id.screening;
+  const MOVE_FORWARD_ID = SR.id.moveForward;
 
   const CERT_START = /^i\s+certify\s+that\s+to\s+the\s+best\s+of\s+my\s+knowledge/i;
   const Q_START = /^(please|specify|provide|enter|select|choose|state|list|give|what|which|when|where|how|are\s+you|do\s+you|did\s+you|have\s+you|i\s+certify|lütfen|bitte|veuillez|por\s+favor|indique|geben|inserisci|podaj|uveďte|введите|يرجى|कृपया|请|ご)/i;
@@ -156,9 +160,7 @@
   }
 
   function collectClickablesDeep(root, win) {
-    const sel =
-      'button, [role="button"], a[href], spl-button, [class*="button"], input[type="button"], input[type="submit"]';
-    const raw = queryDeepSelectorAll(root, win, sel);
+    const raw = queryDeepSelectorAll(root, win, SR.sel.clickable);
     return raw.filter(function (el) {
       return isVisible(el, win);
     });
@@ -229,14 +231,12 @@
     try {
       if (
         host.matches &&
-        host.matches('button, a, [role="tab"], [role="button"], spl-tab-header, spl-link, [tabindex="0"]')
+        host.matches(SR.sel.screeningTabHost)
       ) {
         return host;
       }
     } catch (_) {}
-    const inner = host.querySelector(
-      'button, a, [role="tab"], [role="button"], spl-button, spl-link, [tabindex="0"]'
-    );
+    const inner = host.querySelector(SR.sel.screeningTabInner);
     return inner || host;
   }
 
@@ -389,17 +389,13 @@
       }
 
       const lists = allTabLists(doc, win);
-      const titles = queryDeepSelectorAll(
-        doc.body || doc.documentElement,
-        win,
-        "spl-typography-title, [class*='typography-title']"
-      );
+      const titles = queryDeepSelectorAll(doc.body || doc.documentElement, win, SR.sel.tabTitle);
       for (let j = 0; j < titles.length; j++) {
         const el = titles[j];
         if (lists.length && !elementInAnyTabList(el, lists)) continue;
         const txt = (el.textContent || "").replace(/\s+/g, " ").trim();
         if (/^screening$/i.test(txt)) {
-          const clickHost = el.closest("button, [role='tab'], [role='button'], spl-tab") || el.parentElement || el;
+          const clickHost = el.closest(SR.sel.tabClickHost) || el.parentElement || el;
           await clickEl(win, clickHost);
           await sleep(250);
           log.push({ ok: true, msg: "Opened Screening (typography in tab area)" });
@@ -1280,8 +1276,7 @@
       urls.push(path);
     }
 
-    const broadSel =
-      'a[href*="/app/people/applications/"], a[href*="/app/people/profile/"], sr-link[href*="/app/people/applications/"], sr-link[href*="/app/people/profile/"]';
+    const broadSel = SR.sel.profileLinks;
 
     function harvestSelectorList(root, useDeep) {
       let list = [];
@@ -1305,14 +1300,7 @@
 
     try {
       doc
-        .querySelectorAll(
-          "#st-jobDetailsPage spl-table a[href*='/app/people/'], " +
-            "#st-jobDetailsPage spl-table sr-link[href*='/app/people/'], " +
-            "#st-jobDetailsPage app-applicant-list-container a[href*='/app/people/'], " +
-            "#st-jobDetailsPage app-applicant-list-container sr-link[href*='/app/people/'], " +
-            "#st-jobDetailsPage app-people-tab-applicant-list-container a[href*='/app/people/'], " +
-            "#st-jobDetailsPage people-tab-container a[href*='/app/people/']"
-        )
+        .querySelectorAll(SR.sel.jobListLinks)
         .forEach(function (n) {
           addRaw(hrefFromNode(n));
         });
@@ -1320,12 +1308,12 @@
 
     const nameHosts = new Set();
     try {
-      doc.querySelectorAll('[data-test="applicant-name"], spl-truncate.applicant-name--name-truncate').forEach(function (n) {
+      doc.querySelectorAll(SR.sel.applicantName).forEach(function (n) {
         nameHosts.add(n);
       });
     } catch (_) {}
     try {
-      queryDeepSelectorAll(root, win, '[data-test="applicant-name"]').forEach(function (n) {
+      queryDeepSelectorAll(root, win, SR.sel.applicantNameDeep).forEach(function (n) {
         nameHosts.add(n);
       });
     } catch (_) {}
@@ -1372,18 +1360,16 @@
   function resolveApplicantClickTarget(host) {
     if (!host) return null;
     try {
-      const inJobList = host.closest && host.closest("#st-jobDetailsPage");
+      const inJobList = host.closest && host.closest(SR.sel.jobDetailsPage);
       if (inJobList) {
-        const directA = host.closest && host.closest("a[href*='/app/people/']");
+        const directA = host.closest && host.closest(SR.sel.jobListRowLink);
         if (directA) return directA;
       }
     } catch (_) {}
     try {
       const cell = host.closest && (host.closest("td") || host.closest('[role="gridcell"]'));
       if (cell) {
-        const a = cell.querySelector(
-          'a[href*="/app/people/"], sr-link[href*="/app/people/"], a[href^="/app/people/"]'
-        );
+        const a = cell.querySelector(SR.sel.cellProfileLink);
         if (a) return a;
       }
     } catch (_) {}
@@ -1428,19 +1414,9 @@
 
     try {
       doc
-        .querySelectorAll(
-          "#st-jobDetailsPage spl-table a[href*='/app/people/applications/'], " +
-            "#st-jobDetailsPage spl-table a[href*='/app/people/profile/'], " +
-            "#st-jobDetailsPage spl-table sr-link[href*='/app/people/'], " +
-            "#st-jobDetailsPage app-applicant-list-container a[href*='/app/people/'], " +
-            "#st-jobDetailsPage app-applicant-list-container sr-link[href*='/app/people/'], " +
-            "#st-jobDetailsPage app-people-tab-applicant-list-container a[href*='/app/people/'], " +
-            "#st-jobDetailsPage app-people-tab-applicant-list-container sr-link[href*='/app/people/'], " +
-            "#st-jobDetailsPage people-tab-container a[href*='/app/people/'], " +
-            "#st-jobDetailsPage people-tab-container sr-link[href*='/app/people/']"
-        )
+        .querySelectorAll(SR.sel.jobListClickLinks)
         .forEach(function (linkEl) {
-          const underTable = linkEl.closest && linkEl.closest("spl-table");
+          const underTable = linkEl.closest && linkEl.closest(SR.sel.applicantTable);
           const rowHint =
             underTable && linkEl.parentElement
               ? linkEl.parentElement
@@ -1473,20 +1449,15 @@
 
     const root = doc.body || doc.documentElement;
     try {
-      doc.querySelectorAll('[data-test="applicant-name"], spl-truncate.applicant-name--name-truncate').forEach(considerHost);
+      doc.querySelectorAll(SR.sel.applicantName).forEach(considerHost);
     } catch (_) {}
     try {
-      queryDeepSelectorAll(root, win, '[data-test="applicant-name"]').forEach(considerHost);
+      queryDeepSelectorAll(root, win, SR.sel.applicantNameDeep).forEach(considerHost);
     } catch (_) {}
 
     try {
       doc
-        .querySelectorAll(
-          "#st-jobDetailsPage app-applicant-list-container spl-typography-title spl-truncate, " +
-            "#st-jobDetailsPage app-people-tab-applicant-list-container spl-typography-title spl-truncate, " +
-            "#st-jobDetailsPage people-tab-container spl-typography-title spl-truncate, " +
-            "#st-jobDetailsPage spl-table spl-typography-title spl-truncate"
-        )
+        .querySelectorAll(SR.sel.jobListNames)
         .forEach(considerHost);
     } catch (_) {}
 

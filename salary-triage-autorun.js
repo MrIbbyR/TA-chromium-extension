@@ -47,7 +47,7 @@
       try { return globalThis.__srHasSrProfileChrome(document); } catch (_) {}
     }
     try {
-      return !!document.getElementById("st-moveForward") || !!document.getElementById("st-screening");
+      return !!document.getElementById(globalThis.__SR.id.moveForward) || !!document.getElementById(globalThis.__SR.id.screening);
     } catch (_) {
       return false;
     }
@@ -207,7 +207,7 @@
   // The background pauses the run and hands the tab to the recruiter.
   function botCheckVisible() {
     try {
-      return !!document.querySelector('iframe[src*="captcha-delivery.com"], #ddChallengeBody');
+      return !!document.querySelector(globalThis.__SR.sel.botCheck);
     } catch (_) {
       return false;
     }

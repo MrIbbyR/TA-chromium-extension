@@ -9,11 +9,11 @@ const FIXTURE = "file://" + path.resolve(__dirname, "fixtures/sr-profile.html");
 const ROOT = path.resolve(__dirname, "../..");
 
 async function injectExtensionScripts(page) {
+  await page.addScriptTag({ path: path.join(ROOT, "sr-selectors.js") });
   await page.addScriptTag({ path: path.join(ROOT, "keyword-expansions.js") });
   await page.addScriptTag({ path: path.join(ROOT, "location-gazetteer.js") });
   await page.addScriptTag({ path: path.join(ROOT, "location-infer.js") });
   await page.addScriptTag({ path: path.join(ROOT, "keyword-triage-core.js") });
-  await page.addScriptTag({ path: path.join(ROOT, "sr-selectors.js") });
 }
 
 // ── getNotesSection: must skip <spl-tab> elements ──

@@ -27,6 +27,7 @@
     }
 
     const t0 = Date.now();
+    const SR = globalThis.__SR; // sr-selectors.js loads first
 
     return new Promise(function (resolve) {
       const normalizePath = function (raw) {
@@ -63,21 +64,12 @@
       };
 
       const scroller = (function () {
-        const candidates = [
-          'div[role="grid"]',
-          'section:has(div[role="grid"])',
-          'div[aria-label*="Applicants"]',
-          "div.spl-scroll-y",
-          "div.spl-scroll-container",
-        ];
+        const candidates = SR.sel.listScroller;
         for (let i = 0; i < candidates.length; i++) {
           const el = document.querySelector(candidates[i]);
           if (isScrollable(el)) return el;
         }
-        const linkSel =
-          'a[href*="/app/people/applications/"], a[href*="/app/people/profile/"],' +
-          'sr-link[href*="/app/people/applications/"], sr-link[href*="/app/people/profile/"]';
-        let el = document.querySelector(linkSel);
+        let el = document.querySelector(SR.sel.profileLinks);
         while (el && el !== document.body) {
           if (isScrollable(el)) return el;
           el = el.parentElement;
@@ -103,9 +95,7 @@
         return false;
       };
 
-      const linkSel =
-        'a[href*="/app/people/applications/"], a[href*="/app/people/profile/"],' +
-        'sr-link[href*="/app/people/applications/"], sr-link[href*="/app/people/profile/"]';
+      const linkSel = SR.sel.profileLinks;
 
       const seen = new Set();
       let expectedTotal = parseExpectedTotal();

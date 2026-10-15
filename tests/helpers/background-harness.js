@@ -277,7 +277,7 @@ function createBrowser(opts = {}) {
             return Promise.resolve([{ result: vm.runInNewContext('(' + inj.func + ')()', { window: win }) }]);
           }
           // The background's bot-check probe gets the tab's challenge state.
-          if (inj.func && /captcha-delivery/.test(String(inj.func))) {
+          if (inj.func && inj.func.name === 'botCheckShownInPage') {
             const t = tabs.get(inj.target.tabId);
             return t ? Promise.resolve([{ result: !!t.botCheck }]) : noTab(inj.target.tabId);
           }
@@ -329,6 +329,13 @@ function createBrowser(opts = {}) {
       setInterval: () => { throw new Error('setInterval not modelled'); },
       __clockNow: () => clock.now,
     });
+    // Service-worker importScripts: run the file in the same global scope, as Chrome does.
+    ctx.importScripts = (...files) => {
+      for (const f of files) {
+        const p = path.join(path.dirname(BG_PATH), f);
+        vm.runInContext(fs.readFileSync(p, 'utf8'), ctx, { filename: p });
+      }
+    };
     vm.runInContext(
       'Date.now = () => __clockNow();' +
       '(function(){ var s = ' + (seed + gen) + ';' +

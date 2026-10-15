@@ -263,11 +263,11 @@ async function preflightAllowsStart(feature, tab, logFn, setStatus) {
   try {
     const [probe] = await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: false },
-      func: () => ({
-        loginFormVisible: !!document.querySelector('input[type="password"]'),
-        // DataDome (SR's bot protection) serves its challenge from captcha-delivery.com.
-        botCheckVisible: !!document.querySelector('iframe[src*="captcha-delivery.com"], iframe[src*="captcha"], #ddChallengeBody'),
+      func: (signInSel, botCheckSel) => ({
+        loginFormVisible: !!document.querySelector(signInSel),
+        botCheckVisible: !!document.querySelector(botCheckSel),
       }),
+      args: [__SR.sel.signInPassword, __SR.sel.botCheckBroad],
     });
     Object.assign(facts, (probe && probe.result) || {});
   } catch (_) {}
@@ -296,7 +296,7 @@ async function ensureSalaryCore(tabId) {
     // storage-session-shim.js first: on a tab that predates an extension reload,
     // declared content scripts aren't re-injected, so __srSessionSet would be
     // missing and the queue seed would fail with "shim not loaded".
-    files: ["storage-session-shim.js", "sr-list-autoscroll.js", "salary-triage-core.js"],
+    files: ["storage-session-shim.js", "sr-selectors.js", "sr-list-autoscroll.js", "salary-triage-core.js"],
   });
 }
 
@@ -580,7 +580,7 @@ runBtn.addEventListener("click", async () => {
       chrome.scripting.executeScript({
         target: { tabId: tab.id, allFrames: true },
         func: contentFill,
-        args: [payload],
+        args: [payload, __SR.sel.offerFormBlock],
       }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error(
@@ -1249,7 +1249,7 @@ async function ensureKeywordCore(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: false },
     // storage-session-shim.js first — see ensureSalaryCore for why (predates-reload tabs).
-    files: ["storage-session-shim.js", "keyword-expansions.js", "location-gazetteer.js", "location-infer.js", "sr-list-autoscroll.js", "keyword-triage-core.js"],
+    files: ["storage-session-shim.js", "sr-selectors.js", "keyword-expansions.js", "location-gazetteer.js", "location-infer.js", "sr-list-autoscroll.js", "keyword-triage-core.js"],
   });
 }
 
@@ -1572,7 +1572,7 @@ if (btnKwDiagHistory && kwDiagPanel) {
   });
 }
 
-function contentFill(payload) {
+function contentFill(payload, blockSels) {
   const TARGET = "INR";
   const log = [];
   let filled = 0;
@@ -1595,12 +1595,12 @@ function contentFill(payload) {
     log.push({ ok: true, msg: `Frame: ${url.slice(0, 70)}` });
 
     // ── Helper: find all visible SmartRecruiters form blocks ────────────────
-    // spl-form-element is an SR web component tag name; [id^="spl-form-element_"] is
-    // a legacy ID-attribute fallback for older SR builds.
+    // blockSels (sr-selectors.js offerFormBlock): the spl-form-element tag first, then
+    // a legacy id-prefix fallback for older SR builds.
     function getBlocks() {
-      let raw = Array.from(doc.querySelectorAll('spl-form-element'));
-      if (!raw.length) {
-        raw = Array.from(doc.querySelectorAll('[id^="spl-form-element_"]'));
+      let raw = [];
+      for (let s = 0; s < blockSels.length && !raw.length; s++) {
+        raw = Array.from(doc.querySelectorAll(blockSels[s]));
       }
       return raw.filter(el => {
         const style = win.getComputedStyle(el);

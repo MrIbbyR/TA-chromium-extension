@@ -8,7 +8,11 @@
   // KEYWORD_EXPANSIONS, KEYWORD_TYPO_ALIASES, and resolver functions are loaded from
   // keyword-expansions.js (runs as a content script before this file).
 
-  var MOVE_FORWARD_ID = "st-moveForward";
+  // SmartRecruiters selectors and element ids live in sr-selectors.js, which loads first.
+  var SR = globalThis.__SR || (typeof require === "function" ? require("./sr-selectors.js").SR : null);
+  if (!SR) throw new Error("sr-selectors.js must load before keyword-triage-core.js");
+
+  var MOVE_FORWARD_ID = SR.id.moveForward;
 
   /* ── Helpers ── */
 
@@ -86,9 +90,7 @@
   }
 
   function collectClickablesDeep(root, win) {
-    var sel =
-      'button, [role="button"], a[href], spl-button, [class*="button"], input[type="button"], input[type="submit"]';
-    var raw = queryDeepSelectorAll(root, win, sel);
+    var raw = queryDeepSelectorAll(root, win, SR.sel.clickable);
     return raw.filter(function (el) { return isVisible(el, win); });
   }
 
@@ -288,19 +290,11 @@
 
   /* ── Excluded regions: sidebar / job metadata that should NOT be scanned ── */
 
-  var EXCLUDED_SELECTORS = [
-    "sr-job-application-sidebar",
-    "sr-job-application-details",
-    "sr-job-application-overview",
-    '[class*="job-application-sidebar"]',
-    '[class*="job-application-details"]',
-    "aside sr-job-application-sidebar",
-    // "aside" removed — too broad; stripped candidate skills sections if SR uses aside for profile layout
-  ];
+  var EXCLUDED_SELECTORS = SR.sel.excludedSidebar;
 
   function getExcludedText(doc) {
     var parts = [];
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return "";
     for (var i = 0; i < EXCLUDED_SELECTORS.length; i++) {
       try {
@@ -373,17 +367,9 @@
   }
 
   function getResumeText(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return "";
-    var selectors = [
-      "sr-resume-viewer",
-      "sr-candidate-resume",
-      "sr-resume",
-      '[data-testid*="resume"]',
-      '[data-testid*="Resume"]',
-      '[class*="resume"]',
-      '[id*="resume"]',
-    ];
+    var selectors = SR.sel.resumeViewer;
     var chunks = [];
     var minChunk = 30;
 
@@ -450,17 +436,9 @@
    * on page-header text before the resume has loaded.
    */
   function getResumeOnlyText(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return "";
-    var selectors = [
-      "sr-resume-viewer",
-      "sr-candidate-resume",
-      "sr-resume",
-      '[data-testid*="resume"]',
-      '[data-testid*="Resume"]',
-      '[class*="resume"]',
-      '[id*="resume"]',
-    ];
+    var selectors = SR.sel.resumeViewer;
     var chunks = [];
     var minChunk = 30;
 
@@ -552,10 +530,9 @@
    * shadow roots) forces those text layers to render.
    */
   function nudgeResumeViewerScroll(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return;
-    var selectors = ["sr-resume-viewer", "sr-candidate-resume", "sr-resume",
-      '[data-testid*="resume"]', '[class*="resume"]', ".pdfViewer", '[class*="pdfViewer"]'];
+    var selectors = SR.sel.resumeScroller;
     for (var i = 0; i < selectors.length; i++) {
       try {
         var els = queryDeepSelectorAll(root, null, selectors[i]);
@@ -649,14 +626,13 @@
    * captures + closes it). Prefers "Latest Resume" (most recent upload).
    */
   function findResumeAttachmentLink(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return null;
-    var areas = queryDeepSelectorAll(root, null,
-      "sr-attachments-v2, sr-attachments-container, sr-attachment-row, sr-job-application-sidebar");
+    var areas = queryDeepSelectorAll(root, null, SR.sel.attachmentAreas);
     var searchRoots = areas.length ? areas : [root];
     var latest = null, plain = null, any = null;
     for (var i = 0; i < searchRoots.length; i++) {
-      var links = queryDeepSelectorAll(searchRoots[i], null, "spl-link-button, a, [role='link'], button");
+      var links = queryDeepSelectorAll(searchRoots[i], null, SR.sel.attachmentAreaLinks);
       for (var j = 0; j < links.length; j++) {
         var t = (getDeepText(links[j]) || "").replace(/\s+/g, " ").trim().toLowerCase();
         if (t.length > 40 || t.indexOf("resume") < 0) continue;
@@ -675,12 +651,11 @@
    * "a non-PDF preview".
    */
   function describeResumeViewer(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     function count(sel) { try { return queryDeepSelectorAll(root, null, sel).length; } catch (_) { return 0; } }
     var names = [];
     try {
-      var links = queryDeepSelectorAll(root, null,
-        "sr-attachments-v2 a, sr-attachments-v2 spl-link-button, sr-attachment-row a, sr-attachment-row spl-link-button");
+      var links = queryDeepSelectorAll(root, null, SR.sel.attachmentLinks);
       for (var i = 0; i < links.length && names.length < 5; i++) {
         var t = (getDeepText(links[i]) || "").replace(/\s+/g, " ").trim();
         var ext = (t.match(/\.(pdf|docx?|rtf|odt|txt|png|jpe?g)\b/i) || [])[1];
@@ -688,8 +663,8 @@
         names.push(kind + (ext ? " ." + ext.toLowerCase() : ""));
       }
     } catch (_) {}
-    return "Resume viewer: " + count(".page, [class*='pdfViewer'] .page") + " PDF pages, " +
-      count("canvas") + " canvases, " + count(".textLayer span, [class*='textLayer'] span") + " text spans, " +
+    return "Resume viewer: " + count(SR.sel.pdfPages) + " PDF pages, " +
+      count("canvas") + " canvases, " + count(SR.sel.pdfTextSpans) + " text spans, " +
       count("iframe, embed, object") + " frames/embeds" +
       "; attachments: " + (names.length ? names.join(", ") : "none found");
   }
@@ -762,21 +737,9 @@
    * text source on the page and catches titles like "IAM SailPoint Developer".
    */
   function getCandidateHeaderText(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return "";
-    var selectors = [
-      "sr-candidate-header",
-      '[data-testid="candidate-header"]',
-      '[data-testid*="candidateHeader"]',
-      '[class*="candidate-header"]',
-      '[class*="candidateHeader"]',
-      '[class*="candidate-name"]',
-      '[class*="candidateName"]',
-      '[data-testid*="candidate-name"]',
-      "sr-candidate-summary",
-      '[class*="candidate-summary"]',
-      '[class*="candidateSummary"]',
-    ];
+    var selectors = SR.sel.candidateHeader;
     var chunks = [];
     for (var i = 0; i < selectors.length; i++) {
       try {
@@ -805,24 +768,20 @@
    * falls back to the first header chunk when no dedicated name element exists.
    */
   function getCandidateName(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return "";
     // Primary: SR's stable applicant-name element. The #st-applicantName id does
     // not change across profiles, and its <spl-truncate> slot holds the full name.
     try {
       var applicant = null;
-      try { applicant = doc.querySelector("#st-applicantName"); } catch (_) {}
-      if (!applicant) applicant = findElementByIdDeep(doc.documentElement || doc.body, "st-applicantName");
+      try { applicant = doc.querySelector(SR.sel.applicantNameHeader); } catch (_) {}
+      if (!applicant) applicant = findElementByIdDeep(doc.documentElement || doc.body, SR.id.applicantName);
       if (applicant) {
         var nameTxt = (applicant.innerText || applicant.textContent || "").replace(/\s+/g, " ").trim();
         if (nameTxt.length >= 2 && nameTxt.length < 120) return nameTxt;
       }
     } catch (_) {}
-    var nameSelectors = [
-      '[class*="candidate-name"]',
-      '[class*="candidateName"]',
-      '[data-testid*="candidate-name"]',
-    ];
+    var nameSelectors = SR.sel.candidateName;
     for (var i = 0; i < nameSelectors.length; i++) {
       try {
         var els = queryDeepSelectorAll(root, null, nameSelectors[i]);
@@ -850,23 +809,22 @@
   /**
    * Profile-side inputs for the note's location line, read from SR's
    * personal-info row (sr-candidate-personal-info → flex row → items):
-   *   slotTexts  — the first item, SR's location slot. Class path is SR's
-   *                (sm:spl-flex-row omitted — it needs CSS escaping); the deep
-   *                fallback covers shadow-root rendering.
+   *   slotTexts  — the first item, SR's location slot; the deep fallback
+   *                covers shadow-root rendering.
    *   otherTexts — every other spl-typography-body in the row (title, phone…).
    *   phone      — a tel: link, else a +CC number shown in the row.
    */
   function getProfileLocationInputs(doc) {
-    var ITEM = "div.spl-flex.spl-flex-wrap.spl-flex-col > div:nth-child(1) > spl-typography-body";
+    var ITEM = SR.sel.personalInfoLocation;
     var infos = [];
-    try { infos = Array.prototype.slice.call(doc.querySelectorAll("#st-candidateView sr-candidate-personal-info")); } catch (_) {}
+    try { infos = Array.prototype.slice.call(doc.querySelectorAll(SR.sel.personalInfo)); } catch (_) {}
     if (!infos.length) {
-      try { infos = queryDeepSelectorAll(doc.documentElement || doc.body, null, "sr-candidate-personal-info"); } catch (_) {}
+      try { infos = queryDeepSelectorAll(doc.documentElement || doc.body, null, SR.sel.personalInfoHost); } catch (_) {}
     }
     var slotEls = [], bodyEls = [];
     for (var i = 0; i < infos.length; i++) {
       try { slotEls = slotEls.concat(queryDeepSelectorAll(infos[i], null, ITEM)); } catch (_) {}
-      try { bodyEls = bodyEls.concat(queryDeepSelectorAll(infos[i], null, "spl-typography-body")); } catch (_) {}
+      try { bodyEls = bodyEls.concat(queryDeepSelectorAll(infos[i], null, SR.sel.personalInfoItem)); } catch (_) {}
     }
     var slotTexts = slotEls.map(elText).filter(Boolean);
     var otherTexts = bodyEls.filter(function (el) { return slotEls.indexOf(el) < 0; }).map(elText).filter(Boolean);
@@ -908,13 +866,8 @@
    */
   function getPdfTextLayerText(doc) {
     var chunks = [];
-    var pdfRoot = doc.querySelector("#st-candidateView") || doc.body || doc.documentElement;
-    var selectors = [
-      ".textLayer span",
-      '[class*="textLayer"] span',
-      '[class*="text-layer"] span',
-      ".pdfViewer .page .textLayer span",
-    ];
+    var pdfRoot = doc.querySelector(SR.sel.candidateView) || doc.body || doc.documentElement;
+    var selectors = SR.sel.pdfTextLayer;
     // These selectors overlap heavily (".textLayer span" ⊆ "[class*=textLayer] span"
     // ⊆ ".pdfViewer .page .textLayer span"), so iterating each and pushing a chunk
     // re-captured the SAME spans 2-3× and inflated occurrence counts. Collect the
@@ -964,23 +917,9 @@
   }
 
   function getProfileOverviewText(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return "";
-    var selectors = [
-      '[data-testid*="profile"]',
-      '[data-testid*="Profile"]',
-      '[class*="profile"]',
-      '[id*="profile"]',
-      '[data-testid*="overview"]',
-      '[class*="overview"]',
-      '[class*="skills"]',
-      '[class*="summary"]',
-      '[class*="experience"]',
-      '[class*="education"]',
-      "sr-candidate-profile",
-      "sr-candidate-details",
-      "sr-candidate-overview",
-    ];
+    var selectors = SR.sel.profileOverview;
     var chunks = [];
 
     for (var i = 0; i < selectors.length; i++) {
@@ -996,7 +935,7 @@
   }
 
   function getFullPageText(doc) {
-    var root = doc.querySelector("#st-candidateView") || doc.body || doc.documentElement;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body || doc.documentElement;
     if (!root) return "";
     var deep = collectDeepText(root, 20);
     if (deep.length) return deep.join("\n\n");
@@ -1036,14 +975,8 @@
   }
 
   async function ensureResumeTabActive(doc, win) {
-    var tabSelectors = [
-      'button[data-testid="resume-tab"]',
-      'button[data-testid="Resume"]',
-      '[role="tab"]',
-      'a[href*="resume"]',
-      'button',
-    ];
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var tabSelectors = SR.sel.resumeTab;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return false;
 
     // The "Latest Resume" attachment link also says "resume", but clicking it opens the
@@ -1164,7 +1097,7 @@
       check();
       if (done) return;
 
-      var root = doc.querySelector("#st-candidateView") || doc.body || doc.documentElement;
+      var root = doc.querySelector(SR.sel.candidateView) || doc.body || doc.documentElement;
       var pending = false;
       var obs = new MutationObserver(function () {
         if (pending || done) return;
@@ -1181,7 +1114,7 @@
   }
 
   async function ensureProfileTabActive(doc, win) {
-    var root = doc.querySelector("#st-candidateView") || doc.body;
+    var root = doc.querySelector(SR.sel.candidateView) || doc.body;
     if (!root) return false;
 
     function findProfileTab(r) {
@@ -1765,9 +1698,9 @@
       try { mv = findElementByIdDeep(doc.documentElement || doc.body, MOVE_FORWARD_ID); } catch (_) {}
     }
     var sc = null;
-    try { sc = doc.getElementById("st-screening"); } catch (_) {}
+    try { sc = doc.getElementById(SR.id.screening); } catch (_) {}
     if (!sc) {
-      try { sc = findElementByIdDeep(doc.documentElement || doc.body, "st-screening"); } catch (_) {}
+      try { sc = findElementByIdDeep(doc.documentElement || doc.body, SR.id.screening); } catch (_) {}
     }
     return !!(mv || sc);
   }
@@ -1801,8 +1734,7 @@
       seen.add(path);
       urls.push(path);
     }
-    var broadSel =
-      'a[href*="/app/people/applications/"], a[href*="/app/people/profile/"], sr-link[href*="/app/people/applications/"], sr-link[href*="/app/people/profile/"]';
+    var broadSel = SR.sel.profileLinks;
     function harvestSelectorList(root, useDeep) {
       var list = [];
       if (useDeep) {
@@ -1816,21 +1748,14 @@
     harvestSelectorList(root, false);
     harvestSelectorList(root, true);
     try {
-      doc.querySelectorAll(
-        "#st-jobDetailsPage spl-table a[href*='/app/people/'], " +
-        "#st-jobDetailsPage spl-table sr-link[href*='/app/people/'], " +
-        "#st-jobDetailsPage app-applicant-list-container a[href*='/app/people/'], " +
-        "#st-jobDetailsPage app-applicant-list-container sr-link[href*='/app/people/'], " +
-        "#st-jobDetailsPage app-people-tab-applicant-list-container a[href*='/app/people/'], " +
-        "#st-jobDetailsPage people-tab-container a[href*='/app/people/']"
-      ).forEach(function (n) { addRaw(hrefFromNode(n)); });
+      doc.querySelectorAll(SR.sel.jobListLinks).forEach(function (n) { addRaw(hrefFromNode(n)); });
     } catch (_) {}
     var nameHosts = new Set();
     try {
-      doc.querySelectorAll('[data-test="applicant-name"], spl-truncate.applicant-name--name-truncate').forEach(function (n) { nameHosts.add(n); });
+      doc.querySelectorAll(SR.sel.applicantName).forEach(function (n) { nameHosts.add(n); });
     } catch (_) {}
     try {
-      queryDeepSelectorAll(root, win, '[data-test="applicant-name"]').forEach(function (n) { nameHosts.add(n); });
+      queryDeepSelectorAll(root, win, SR.sel.applicantNameDeep).forEach(function (n) { nameHosts.add(n); });
     } catch (_) {}
     nameHosts.forEach(function (host) {
       var el = host;
@@ -1854,16 +1779,16 @@
   function resolveApplicantClickTarget(host) {
     if (!host) return null;
     try {
-      var inJobList = host.closest && host.closest("#st-jobDetailsPage");
+      var inJobList = host.closest && host.closest(SR.sel.jobDetailsPage);
       if (inJobList) {
-        var directA = host.closest && host.closest("a[href*='/app/people/']");
+        var directA = host.closest && host.closest(SR.sel.jobListRowLink);
         if (directA) return directA;
       }
     } catch (_) {}
     try {
       var cell = host.closest && (host.closest("td") || host.closest('[role="gridcell"]'));
       if (cell) {
-        var a = cell.querySelector('a[href*="/app/people/"], sr-link[href*="/app/people/"], a[href^="/app/people/"]');
+        var a = cell.querySelector(SR.sel.cellProfileLink);
         if (a) return a;
       }
     } catch (_) {}
@@ -1900,18 +1825,8 @@
       out.push(el);
     }
     try {
-      doc.querySelectorAll(
-        "#st-jobDetailsPage spl-table a[href*='/app/people/applications/'], " +
-        "#st-jobDetailsPage spl-table a[href*='/app/people/profile/'], " +
-        "#st-jobDetailsPage spl-table sr-link[href*='/app/people/'], " +
-        "#st-jobDetailsPage app-applicant-list-container a[href*='/app/people/'], " +
-        "#st-jobDetailsPage app-applicant-list-container sr-link[href*='/app/people/'], " +
-        "#st-jobDetailsPage app-people-tab-applicant-list-container a[href*='/app/people/'], " +
-        "#st-jobDetailsPage app-people-tab-applicant-list-container sr-link[href*='/app/people/'], " +
-        "#st-jobDetailsPage people-tab-container a[href*='/app/people/'], " +
-        "#st-jobDetailsPage people-tab-container sr-link[href*='/app/people/']"
-      ).forEach(function (linkEl) {
-        var underTable = linkEl.closest && linkEl.closest("spl-table");
+      doc.querySelectorAll(SR.sel.jobListClickLinks).forEach(function (linkEl) {
+        var underTable = linkEl.closest && linkEl.closest(SR.sel.applicantTable);
         var rowHint = underTable && linkEl.parentElement
           ? linkEl.parentElement
           : linkEl.closest("tr") || linkEl.closest('[role="row"]');
@@ -1931,15 +1846,10 @@
       out.push(target);
     }
     var root = doc.body || doc.documentElement;
-    try { doc.querySelectorAll('[data-test="applicant-name"], spl-truncate.applicant-name--name-truncate').forEach(considerHost); } catch (_) {}
-    try { queryDeepSelectorAll(root, win, '[data-test="applicant-name"]').forEach(considerHost); } catch (_) {}
+    try { doc.querySelectorAll(SR.sel.applicantName).forEach(considerHost); } catch (_) {}
+    try { queryDeepSelectorAll(root, win, SR.sel.applicantNameDeep).forEach(considerHost); } catch (_) {}
     try {
-      doc.querySelectorAll(
-        "#st-jobDetailsPage app-applicant-list-container spl-typography-title spl-truncate, " +
-        "#st-jobDetailsPage app-people-tab-applicant-list-container spl-typography-title spl-truncate, " +
-        "#st-jobDetailsPage people-tab-container spl-typography-title spl-truncate, " +
-        "#st-jobDetailsPage spl-table spl-typography-title spl-truncate"
-      ).forEach(considerHost);
+      doc.querySelectorAll(SR.sel.jobListNames).forEach(considerHost);
     } catch (_) {}
     return out;
   }
@@ -1964,10 +1874,10 @@
   function findNotesTab(doc, win) {
     var root = doc.body || doc.documentElement;
     var candidates = [];
-    try { candidates = candidates.concat(Array.from(doc.querySelectorAll("a > spl-tab-label > div"))); } catch (_) {}
-    try { candidates = candidates.concat(Array.from(doc.querySelectorAll("a > spl-tab-label"))); } catch (_) {}
-    try { candidates = candidates.concat(Array.from(doc.querySelectorAll('[role="tab"]'))); } catch (_) {}
-    try { candidates = candidates.concat(queryDeepSelectorAll(root, win, "spl-tab-label")); } catch (_) {}
+    SR.sel.notesTabLabel.forEach(function (sel) {
+      try { candidates = candidates.concat(Array.from(doc.querySelectorAll(sel))); } catch (_) {}
+    });
+    try { candidates = candidates.concat(queryDeepSelectorAll(root, win, SR.sel.tabLabel)); } catch (_) {}
     for (var i = 0; i < candidates.length; i++) {
       var el = candidates[i];
       var txt = ((el.textContent || el.innerText || "") + "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -2000,7 +1910,7 @@
   function describeTabBar(doc, win) {
     var labels = [];
     try {
-      var els = queryDeepSelectorAll(doc.body || doc.documentElement, win, "spl-tab-label");
+      var els = queryDeepSelectorAll(doc.body || doc.documentElement, win, SR.sel.tabLabel);
       for (var i = 0; i < els.length && labels.length < 12; i++) {
         labels.push(((els[i].textContent || "") + "").replace(/\s+/g, " ").trim().slice(0, 20));
       }
@@ -2026,7 +1936,7 @@
         if (tag === "textarea") { out.push(node); return; }
         if (node.matches) {
           try {
-            if (node.matches('[contenteditable="true"], div[role="textbox"]')) out.push(node);
+            if (node.matches(SR.sel.notesInput)) out.push(node);
           } catch (_) {}
         }
       }
@@ -2041,19 +1951,19 @@
 
   function getNotesSection(doc) {
     var sec = null;
-    try { sec = doc.querySelector("#st-notes"); } catch (_) {}
     // #st-notes may be a <spl-tab> (tab button) rather than the notes form panel.
-    // When it's a tab, the form lives elsewhere — return null so callers fall back to body.
-    if (sec) {
-      var stag = (sec.tagName || "").toLowerCase();
-      if (stag === "spl-tab" || (sec.getAttribute && sec.getAttribute("role") === "tab")) sec = null;
+    // When a match is a tab, the form lives elsewhere — skip it so callers fall back to body.
+    var sels = SR.sel.notesSection;
+    for (var ni = 0; !sec && ni < sels.length; ni++) {
+      try { sec = doc.querySelector(sels[ni]); } catch (_) {}
+      if (sec) {
+        var stag = (sec.tagName || "").toLowerCase();
+        if (stag === "spl-tab" || (sec.getAttribute && sec.getAttribute("role") === "tab")) sec = null;
+      }
     }
-    if (!sec) try { sec = doc.querySelector('[data-test="notes"]'); } catch (_) {}
-    if (!sec) try { sec = doc.querySelector("sr-notes"); } catch (_) {}
-    if (!sec) try { sec = doc.querySelector("app-notes"); } catch (_) {}
     if (!sec) {
       try {
-        var deep = findElementByIdDeep(doc.documentElement || doc.body, "st-notes");
+        var deep = findElementByIdDeep(doc.documentElement || doc.body, SR.id.notes);
         if (deep) {
           var dtag = (deep.tagName || "").toLowerCase();
           if (dtag !== "spl-tab" && !(deep.getAttribute && deep.getAttribute("role") === "tab")) sec = deep;
@@ -2099,7 +2009,7 @@
             input = node;
           } else if (node.matches) {
             try {
-              if (node.matches('[contenteditable="true"], div[role="textbox"]') && isVisible(node, win))
+              if (node.matches(SR.sel.notesInput) && isVisible(node, win))
                 input = node;
             } catch (_) {}
           }
@@ -2113,7 +2023,7 @@
         if (!postBtn && (tag === "spl-button" || tag === "button" || tag === "input")) {
           if (isVisible(node, win) && !isDisabledish(node)) {
             var skip = false;
-            try { if (node.closest && node.closest("spl-dropdown")) skip = true; } catch (_) {}
+            try { if (node.closest && node.closest(SR.sel.splDropdown)) skip = true; } catch (_) {}
             if (!skip) {
               var dtxt = getDeepText(node);
               if (/^post$/i.test(dtxt) || (/post|save|submit/i.test(dtxt) && dtxt.length < 20)) postBtn = node;
@@ -2167,13 +2077,13 @@
 
   function findNotesPostButton(doc, win) {
     // Pass 1: search all spl-form-element containers (ID index varies per page load)
-    var formEls = doc.querySelectorAll('[id^="spl-form-element_"]');
+    var formEls = doc.querySelectorAll(SR.sel.notesFormElement);
     for (var fi = 0; fi < formEls.length; fi++) {
       try {
-        var allBtns = formEls[fi].querySelectorAll("spl-button");
+        var allBtns = formEls[fi].querySelectorAll(SR.sel.splButton);
         for (var b = 0; b < allBtns.length; b++) {
           if (!isVisible(allBtns[b], win)) continue;
-          if (allBtns[b].closest && allBtns[b].closest("spl-dropdown")) continue;
+          if (allBtns[b].closest && allBtns[b].closest(SR.sel.splDropdown)) continue;
           var txt = getDeepText(allBtns[b]);
           if (/post|save|submit/i.test(txt)) return allBtns[b];
         }
@@ -2185,7 +2095,7 @@
     var deepBtns = findAllDeepButtons(searchRoot, win);
     for (var i = 0; i < deepBtns.length; i++) {
       if (isDisabledish(deepBtns[i])) continue;
-      if (deepBtns[i].closest && deepBtns[i].closest("spl-dropdown")) continue;
+      if (deepBtns[i].closest && deepBtns[i].closest(SR.sel.splDropdown)) continue;
       var dtxt = getDeepText(deepBtns[i]);
       if (/^post$/i.test(dtxt)) return deepBtns[i];
     }
@@ -2194,7 +2104,7 @@
       var bodyBtns = findAllDeepButtons(doc.body || doc.documentElement, win);
       for (var j = 0; j < bodyBtns.length; j++) {
         if (isDisabledish(bodyBtns[j])) continue;
-        if (bodyBtns[j].closest && bodyBtns[j].closest("spl-dropdown")) continue;
+        if (bodyBtns[j].closest && bodyBtns[j].closest(SR.sel.splDropdown)) continue;
         var btxt = getDeepText(bodyBtns[j]);
         if (/^post$/i.test(btxt)) return bodyBtns[j];
       }
@@ -2444,7 +2354,7 @@
   /** Check if any dropdown menu is currently visible in the DOM. */
   function isDropdownMenuOpen(doc) {
     try {
-      var menus = doc.querySelectorAll("[id^='spl-dropdown-menu']");
+      var menus = doc.querySelectorAll(SR.sel.dropdownMenu);
       for (var i = 0; i < menus.length; i++) {
         var r = menus[i].getBoundingClientRect();
         if (r.width > 0 && r.height > 0) return true;
@@ -2455,15 +2365,15 @@
 
   /** Find the "Note to self" item from any visible dropdown menu. */
   function findNoteToSelfItem(doc) {
-    var menus = doc.querySelectorAll("[id^='spl-dropdown-menu']");
+    var menus = doc.querySelectorAll(SR.sel.dropdownMenu);
     for (var m = 0; m < menus.length; m++) {
-      var items = menus[m].querySelectorAll("spl-dropdown-item");
+      var items = menus[m].querySelectorAll(SR.sel.dropdownItem);
       for (var i = 0; i < items.length; i++) {
         if (/note\s*to\s*self/i.test(getDeepText(items[i]))) return items[i];
       }
       if (items.length >= 3) return items[2];
     }
-    var loose = doc.querySelectorAll("spl-dropdown-item");
+    var loose = doc.querySelectorAll(SR.sel.dropdownItem);
     for (var j = 0; j < loose.length; j++) {
       if (/note\s*to\s*self/i.test(getDeepText(loose[j]))) return loose[j];
     }
@@ -2479,16 +2389,16 @@
     // Find the note-type dropdown — the one whose text contains "note" (e.g. "Open note").
     // There may be other dropdowns (e.g. "Using Publisher") in the same form element;
     // querySelectorAll returns all of them so we can pick the right one.
-    var formEls = doc.querySelectorAll('[id^="spl-form-element_"]');
+    var formEls = doc.querySelectorAll(SR.sel.notesFormElement);
     for (var fi = 0; fi < formEls.length && !splBtn; fi++) {
       try {
-        var dds = formEls[fi].querySelectorAll("spl-dropdown");
+        var dds = formEls[fi].querySelectorAll(SR.sel.splDropdown);
         for (var di = 0; di < dds.length; di++) {
           var dd = dds[di];
           if (!isVisible(dd, win)) continue;
           var ddText = getDeepText(dd);
           if (/\bnote\b/i.test(ddText)) {
-            var btn = dd.querySelector("spl-button");
+            var btn = dd.querySelector(SR.sel.splButton);
             if (btn) { splBtn = btn; break; }
           }
         }
@@ -2497,12 +2407,12 @@
     // Fallback: deep search entire body for note-type dropdown
     if (!splBtn) {
       var ddSearchRoot = doc.body || doc.documentElement;
-      var allDds = queryDeepSelectorAll(ddSearchRoot, win, "spl-dropdown");
+      var allDds = queryDeepSelectorAll(ddSearchRoot, win, SR.sel.splDropdown);
       for (var di2 = 0; di2 < allDds.length; di2++) {
         if (!isVisible(allDds[di2], win)) continue;
         var ddText2 = getDeepText(allDds[di2]);
         if (/\bnote\b/i.test(ddText2)) {
-          var btn2 = allDds[di2].querySelector("spl-button");
+          var btn2 = allDds[di2].querySelector(SR.sel.splButton);
           if (btn2) { splBtn = btn2; break; }
         }
       }
@@ -2527,9 +2437,10 @@
     if (!noteItem) return false;
 
     var inner = null;
-    try { inner = noteItem.querySelector("div > spl-icon"); } catch (_) {}
-    if (!inner) { try { inner = noteItem.querySelector("div > div > spl-typography-body"); } catch (_) {} }
-    if (!inner) { try { inner = noteItem.querySelector("div"); } catch (_) {} }
+    var itemTargets = SR.sel.dropdownItemClickTarget;
+    for (var ti = 0; !inner && ti < itemTargets.length; ti++) {
+      try { inner = noteItem.querySelector(itemTargets[ti]); } catch (_) {}
+    }
 
     var clickEl = inner || noteItem;
     singleClick(clickEl, win, "dispatch");

@@ -54,6 +54,8 @@ After editing any file, click the refresh icon on the extension card in `chrome:
 
 **Group 2 (main frame only):** `storage-session-shim.js` → `keyword-expansions.js` → `salary-triage-autorun.js` → `keyword-triage-autorun.js`
 
+`sr-selectors.js` must load first: every file that touches the SR DOM reads its selectors from the `__SR` global it defines (see SmartRecruiters Selectors). The popup's `ensureSalaryCore` / `ensureKeywordCore` inject it before the core, `popup.html` loads it before `popup.js`, and `background.js` pulls it in with `importScripts`.
+
 `keyword-expansions.js` must load before `keyword-triage-core.js` because the core file reads `KEYWORD_EXPANSIONS` and `KEYWORD_TYPO_ALIASES` from the global scope set by the expansions file. Likewise `location-gazetteer.js` → `location-infer.js` must precede the core (it reads `__srLocation`); the popup's `ensureKeywordCore` injects them in the same order.
 
 `storage-session-shim.js` must load before the autorun files because they read/write queue state through the `__srSessionGet/Set/Remove` globals it defines (see Storage Locations).
@@ -98,6 +100,12 @@ SmartRecruiters uses web components (`spl-button`, `spl-tab`, `sr-link`). All DO
 - `queryDeepSelectorAll(root, win, selector)` — shadow-piercing `querySelectorAll`
 
 Never use plain `document.querySelector` for SR elements — it won't find them inside shadow roots.
+
+### SmartRecruiters Selectors (`sr-selectors.js`)
+
+Every SR selector and element id lives in `sr-selectors.js`, so a SmartRecruiters UI change is a one-file fix. Code reads `SR.sel.<name>` (a string, or an array tried in order) and `SR.id.<name>` (for `getElementById` / `findElementByIdDeep`). The cores bind `SR` from `globalThis.__SR`, falling back to `require()` under Node. Functions injected with `chrome.scripting.executeScript({ func })` can't see extension globals, so the caller passes the selector in `args` (popup preflight, Mr Offer `contentFill`, the background's bot-check probe and resume-tab extractor).
+
+The same table drives the DevTools healthcheck: type `__srDomHealthcheck()` on an SR page to see which selectors still match (via `sr-healthcheck-main-world.js`). Plain HTML selectors (`button`, `iframe`, `tr`, `[role="tab"]`) and tag-name comparisons (`tag === "spl-button"`) stay inline. `tests/sr-selectors.test.js` fails if a query call elsewhere uses an SR selector literal, or if a loader drops the file.
 
 ### Anti-Detection
 
@@ -168,9 +176,9 @@ Self-contained async XLSX parser with no external dependencies (no SheetJS, no D
 
 ## Lessons
 
-### `keyword-triage-core.js` uses CRLF line endings
+### Some files use CRLF line endings
 
-Every other file is LF. A script that reads and rewrites it (Python `open()` without `newline=''`, many sed/perl one-liners) silently converts it to LF and the diff shows all ~3,700 lines changed. Preserve CRLF when editing it programmatically, and check `git diff --stat` after.
+`keyword-triage-core.js`, `salary-triage-core.js`, `sr-list-autoscroll.js` and both `*-autorun.js` files are CRLF; the rest are LF. A script that reads and rewrites one of them (Python `open()` without `newline=''`, many sed/perl one-liners) silently converts it to LF and the diff shows every line changed. Preserve CRLF when editing it programmatically, and check `git diff --stat` after.
 
 ### Prove a regression test against the old code
 
