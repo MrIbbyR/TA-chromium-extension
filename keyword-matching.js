@@ -1,3 +1,4 @@
+// @ts-check
 // keyword-matching.js — keyword search: keyword normalization, matching and the boolean query parser (no DOM).
 // One of the keyword-*.js modules that keyword-triage-core.js runs. They share the
 // globalThis.__srKw namespace (require() under Node) and load in dependency order:
@@ -9,15 +10,37 @@
   // KEYWORD_EXPANSIONS, KEYWORD_TYPO_ALIASES, and resolver functions are loaded from
   // keyword-expansions.js (runs as a content script before this file).
 
-  /** Synonym forms for one boolean leaf (same table as comma keywords, plus typo table). */
+  /** @typedef {{ keyword: string, count: number }} KeywordHit */
+  /**
+   * Token counts of a normalised haystack; bigram/trigram keys join tokens with "\x00".
+   * @typedef {{ uni: Record<string, number>, bi: Record<string, number>, tri: Record<string, number> }} TokenIndex
+   */
+  /**
+   * @typedef {{ type: "PHRASE" | "TERM", value: string }
+   *   | { type: "LPAREN" | "RPAREN" | "AND" | "OR" | "NOT" }} BoolToken
+   */
+  /**
+   * @typedef {{ type: "TERM", value: string, quoted?: boolean }
+   *   | { type: "NOT", operand: BoolAst }
+   *   | { type: "AND" | "OR", left: BoolAst, right: BoolAst }} BoolAst
+   */
+
+  /**
+   * Synonym forms for one boolean leaf (same table as comma keywords, plus typo table).
+   * @param {string} term
+   * @returns {string[]}
+   */
   function expandOneBooleanTerm(term) {
     var t = (term || "").trim();
     if (!t) return [];
     var low = t.toLowerCase();
     if (KEYWORD_TYPO_ALIASES[low]) t = KEYWORD_TYPO_ALIASES[low];
     var table = buildExpansionTable();
+    /** @type {string[]} */
     var out = [];
+    /** @type {Record<string, boolean>} */
     var seen = {};
+    /** @param {string} s */
     function push(s) {
       var x = (s || "").trim();
       if (!x) return;
@@ -36,19 +59,23 @@
 
   /* ── Text normalization (ported from req.py _normalize_for_kw) ── */
 
+  /**
+   * @param {unknown} s
+   * @returns {string}
+   */
   function normalizeForKw(s) {
     if (!s) return "";
-    s = String(s);
+    var str = String(s);
     try {
-      if (typeof s.normalize === "function") s = s.normalize("NFKC");
+      if (typeof str.normalize === "function") str = str.normalize("NFKC");
     } catch (_) {}
-    s = s.replace(/[\u200B-\u200D\uFEFF]/g, "");
-    s = s.replace(/\u00AD/g, "");
-    s = s.replace(/\u2060/g, "");
-    s = s.replace(/\u00A0/g, " ").replace(/\u202F/g, " ").replace(/\u2007/g, " ");
-    s = s.replace(/\u00B7/g, " ").replace(/\u2022/g, " ");
-    s = s.replace(/\s+/g, " ");
-    return s.trim();
+    str = str.replace(/[\u200B-\u200D\uFEFF]/g, "");
+    str = str.replace(/\u00AD/g, "");
+    str = str.replace(/\u2060/g, "");
+    str = str.replace(/\u00A0/g, " ").replace(/\u202F/g, " ").replace(/\u2007/g, " ");
+    str = str.replace(/\u00B7/g, " ").replace(/\u2022/g, " ");
+    str = str.replace(/\s+/g, " ");
+    return str.trim();
   }
 
   /**
@@ -66,6 +93,9 @@
    * Matched X/Y hit/miss result — is unchanged; only the displayed counts shrink
    * to their true values. Short segments (< 12 chars) are kept verbatim so unique
    * one-word data is never lost.
+   * @template {string | null | undefined} T
+   * @param {T} text
+   * @returns {T}
    */
   function dedupeTextSegments(text) {
     if (!text) return text;
@@ -81,7 +111,7 @@
       }
       out.push(segs[i]);
     }
-    return out.join("\n");
+    return /** @type {T} */ (out.join("\n"));
   }
 
   /**
@@ -101,11 +131,16 @@
    * ("AI Fundamentals" vs "AIFundamentals") collapse to the same unit. Survivors
    * keep their original casing and punctuation, so downstream camelCase
    * splitting and phrase matching are unchanged.
+   * @template {string | null | undefined} T
+   * @param {T} text
+   * @returns {T}
    */
   function collapseInlineRepeats(text) {
     if (!text) return text;
     var s = String(text);
-    var re = /[A-Za-z0-9]+/g, m, toks = [];
+    var re = /[A-Za-z0-9]+/g, m;
+    /** @type {{ s: number, e: number }[]} */
+    var toks = [];
     while ((m = re.exec(s)) !== null) {
       toks.push({ s: m.index, e: re.lastIndex });
       if (toks.length > 80000) return text; // pathological input — bail, unchanged
@@ -122,6 +157,7 @@
     var Clen = C.length;
     var MAXM = 200; // longest repeated unit (in chars) we will collapse
 
+    /** @param {number} a @param {number} b @param {number} len */
     function eqAt(a, b, len) {
       for (var k = 0; k < len; k++) {
         if (C.charCodeAt(a + k) !== C.charCodeAt(b + k)) return false;
@@ -170,11 +206,17 @@
       }
     }
     out += s.slice(cursor);
-    return out;
+    return /** @type {T} */ (out);
   }
 
   /* ── Keyword matching (ported from req.py find_keyword_hits) ── */
 
+  /**
+   * Regex source matching `kwNorm` with any separators between its tokens.
+   * @param {string} kwNorm
+   * @param {boolean} withSuffix - also allow s/es/ed/ing after the last token
+   * @returns {string} "" when the keyword has no letters or digits
+   */
   function sepFlexiblePatternSource(kwNorm, withSuffix) {
     var tokens = kwNorm.match(/[A-Za-z]+|\d+/g);
     if (!tokens || !tokens.length) return "";
@@ -192,7 +234,10 @@
   }
 
   /** ISO list heuristic: "ISO Standard (9001, 45001)" matches keyword "ISO 45001".
-   *  Uses a proximity window because normalizeForKw strips newlines from hay. */
+   *  Uses a proximity window because normalizeForKw strips newlines from hay.
+   * @param {string} hay
+   * @param {string} num
+   */
   function isoListHit(hay, num) {
     if (!num) return false;
     var numStr = String(num);
@@ -225,6 +270,8 @@
    *
    * Tokens are lowercased and split on every non-alphanumeric character, so
    * "tf.keras" → ["tf","keras"], "ci/cd" → ["ci","cd"], "k8s" → ["k8s"].
+   * @param {string} hay
+   * @returns {TokenIndex}
    */
   function buildTokenIndex(hay) {
     var split = hay
@@ -265,6 +312,10 @@
    * Look up a normalised keyword in the token index.
    * Returns hit count (≥1), 0 (not found), or -1 (needs regex — 4+ token phrase
    * or multi-token wildcard the index can't resolve directly).
+   * @param {string} kwNorm
+   * @param {TokenIndex} idx
+   * @param {boolean} isWildcard
+   * @returns {number}
    */
   function kwHitsInIndex(kwNorm, idx, isWildcard) {
     var toks = kwNorm.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -318,11 +369,12 @@
   /**
    * @param {string|string[]} texts - haystack(s); joined with space then normalised
    * @param {string[]} keywords
-   * @param {{ maxItems?: number, scanEveryKeyword?: boolean }} opts
+   * @param {{ maxItems?: number, scanEveryKeyword?: boolean }} [opts]
+   * @returns {{ hits: KeywordHit[], hitCount: number }}
    */
   function findKeywordHits(texts, keywords, opts) {
     opts = opts || {};
-    var rawCap = parseInt(opts.maxItems, 10);
+    var rawCap = parseInt(String(opts.maxItems), 10);
     var maxItems = Number.isFinite(rawCap) && rawCap > 0 ? Math.min(15000, rawCap) : 50;
     var scanEveryKeyword = !!(opts && opts.scanEveryKeyword);
     var joined =
@@ -337,7 +389,9 @@
     // Build token index once — all keyword lookups in this call share it.
     var idx = buildTokenIndex(hay);
 
+    /** @type {KeywordHit[]} */
     var found = [];
+    /** @type {Record<string, boolean>} */
     var seenLower = {};
 
     for (var i = 0; i < keywords.length; i++) {
@@ -418,10 +472,15 @@
    *
    * If a form has no entry in canonicalMap it is treated as its own canonical.
    * Pass null/undefined canonicalMap to skip deduplication (no-op passthrough).
+   * @param {KeywordHit[]} hits
+   * @param {Record<string, string> | null | undefined} canonicalMap - lowercased form → canonical keyword
+   * @returns {KeywordHit[]}
    */
   function deduplicateHitsByCanonical(hits, canonicalMap) {
     if (!canonicalMap) return hits;
+    /** @type {Record<string, KeywordHit>} */
     var groups = Object.create(null);
+    /** @type {string[]} */
     var order = [];
     for (var i = 0; i < hits.length; i++) {
       var h = hits[i];
@@ -446,6 +505,10 @@
    *
    * Returns a map { canonicalLower: count }, or null when there is no real resume
    * (sparse, or SR summary chrome) so the caller falls back to the union count.
+   * @param {string | null | undefined} resumeText
+   * @param {string[]} keywords
+   * @param {Record<string, string> | null | undefined} canonicalMap
+   * @returns {Record<string, number> | null}
    */
   function countsFromResume(resumeText, keywords, canonicalMap) {
     if (!resumeText || resumeText.length < 300) return null;
@@ -454,6 +517,7 @@
     if (!clean) return null;
     var hits = findKeywordHits(clean, keywords).hits;
     var deduped = deduplicateHitsByCanonical(hits, canonicalMap);
+    /** @type {Record<string, number>} */
     var map = Object.create(null);
     for (var i = 0; i < deduped.length; i++) map[deduped[i].keyword.toLowerCase()] = deduped[i].count;
     return map;
@@ -461,7 +525,12 @@
 
   /* ── Boolean search parser (LinkedIn Recruiter–style syntax) ── */
 
+  /**
+   * @param {unknown} input
+   * @returns {BoolToken[]}
+   */
   function tokenizeBoolean(input) {
+    /** @type {BoolToken[]} */
     var tokens = [];
     var i = 0;
     var s = String(input || "");
@@ -504,20 +573,33 @@
     return tokens;
   }
 
+  /**
+   * LinkedIn Recruiter-style query → AST. Precedence NOT > AND > OR; adjacent terms AND.
+   * @param {unknown} input
+   * @returns {BoolAst}
+   */
   function parseBooleanQuery(input) {
     var tokens = tokenizeBoolean(input);
     var pos = 0;
 
+    /** @returns {BoolToken | null} */
     function peek() {
       return pos < tokens.length ? tokens[pos] : null;
+    }
+    /** @param {BoolToken["type"]} type */
+    function peekIs(type) {
+      var t = peek();
+      return !!t && t.type === type;
     }
     function consume() {
       return tokens[pos++];
     }
 
+    /** @returns {BoolAst} */
     function parseOr() {
+      /** @type {BoolAst} */
       var left = parseAnd();
-      while (peek() && peek().type === "OR") {
+      while (peekIs("OR")) {
         consume();
         var right = parseAnd();
         left = { type: "OR", left: left, right: right };
@@ -525,10 +607,12 @@
       return left;
     }
 
+    /** @returns {BoolAst} */
     function parseAnd() {
+      /** @type {BoolAst} */
       var left = parseNot();
-      while (peek()) {
-        var t = peek();
+      var t;
+      while ((t = peek())) {
         if (t.type === "AND") {
           consume();
           var right = parseNot();
@@ -543,8 +627,9 @@
       return left;
     }
 
+    /** @returns {BoolAst} */
     function parseNot() {
-      if (peek() && peek().type === "NOT") {
+      if (peekIs("NOT")) {
         consume();
         var operand = parseAtom();
         return { type: "NOT", operand: operand };
@@ -552,6 +637,7 @@
       return parseAtom();
     }
 
+    /** @returns {BoolAst} */
     function parseAtom() {
       var t = peek();
       if (!t) return { type: "TERM", value: "" };
@@ -559,7 +645,7 @@
       if (t.type === "LPAREN") {
         consume();
         var expr = parseOr();
-        if (peek() && peek().type === "RPAREN") consume();
+        if (peekIs("RPAREN")) consume();
         return expr;
       }
 
@@ -581,6 +667,11 @@
     return parseOr();
   }
 
+  /**
+   * @param {BoolAst | null | undefined} ast
+   * @param {boolean} [negated]
+   * @returns {{ value: string, negated: boolean }[]}
+   */
   function extractLeafTerms(ast, negated) {
     negated = !!negated;
     if (!ast) return [];
@@ -597,6 +688,11 @@
     return [];
   }
 
+  /**
+   * @param {BoolAst | null | undefined} ast
+   * @param {Record<string, unknown>} matchedSet - lowercased term → truthy when matched
+   * @returns {boolean}
+   */
   function evaluateBooleanAst(ast, matchedSet) {
     if (!ast) return false;
     if (ast.type === "TERM") {
@@ -625,6 +721,7 @@
    *
    * The markers below are SR UI strings that never appear inside a candidate's
    * resume, so a false positive on real resume text is effectively impossible.
+   * @param {unknown} text
    */
   function looksLikeSrSummaryChrome(text) {
     if (!text) return false;

@@ -23,6 +23,22 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: node --test tests/*.test.js
 
+  typecheck:
+    name: Type check (// @ts-check files)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: tests/typecheck
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tests/typecheck/package-lock.json
+      - run: npm ci
+      - run: npx tsc -p tsconfig.json
+
   e2e:
     name: E2E tests (Playwright)
     runs-on: ubuntu-24.04
@@ -48,7 +64,7 @@ jobs:
 
   package:
     name: Package extension
-    needs: [unit, e2e]
+    needs: [unit, typecheck, e2e]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

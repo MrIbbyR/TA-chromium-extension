@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "name": "sr-extension-typecheck",
+  "description": "Type-checks the extension's // @ts-check files — dev-only, not part of the extension",
+  "scripts": {
+    "check": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2"
+  }
+}

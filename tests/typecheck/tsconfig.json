@@ -1,0 +1,19 @@
+{
+  // Checks only the files listed here, and only because each starts with // @ts-check.
+  // Add a file to "files" when it gets // @ts-check. Run: cd tests/typecheck && npm run check
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": true,
+    "target": "es2022",
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "types": ["node"],
+    "skipLibCheck": true
+  },
+  "files": [
+    "globals.d.ts",
+    "../../keyword-dom.js",
+    "../../keyword-matching.js"
+  ]
+}

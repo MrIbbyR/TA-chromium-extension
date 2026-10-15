@@ -294,8 +294,9 @@
     },
   };
 
-  var S = {};
-  Object.keys(SEL).forEach(function (k) { S[k] = SEL[k].sel; });
+  /** @type {{ [K in keyof typeof SEL]: (typeof SEL)[K]["sel"] }} */
+  var S = /** @type {any} */ ({});
+  Object.keys(SEL).forEach(function (k) { /** @type {any} */ (S)[k] = /** @type {any} */ (SEL)[k].sel; });
   var SR = { sel: S, id: ID };
 
   // ── Healthcheck ─────────────────────────────────────────────────────

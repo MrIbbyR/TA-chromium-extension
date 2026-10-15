@@ -15,7 +15,7 @@ The tool began as a Python script and was ported to a JS extension. The extensio
 ## Options, in priority order
 
 ### 1. Code quality inside the current stack (next)
-- **`// @ts-check` + JSDoc types**, with `tsc --noEmit` in CI. TypeScript-level safety, still no build step.
+- **`// @ts-check` + JSDoc types**, with `tsc --noEmit` in CI — started 2026-10-15: `tests/typecheck/` (TypeScript 7, strict), CI job, `keyword-dom.js` + `keyword-matching.js` checked. Next: the other `keyword-*.js` modules, then `sr-selectors.js`, `run-summary.js`, `run-preflight.js`.
 - ~~**Split `keyword-triage-core.js`**~~ — done 2026-10-15: `keyword-dom/matching/extract/pipeline/notes/diag.js` (135–970 lines each), core down to ~900 lines of scan orchestration.
 - ~~**All SR page selectors in `sr-selectors.js`**~~ — done 2026-10-15; an SR UI change is now a one-file fix, guarded by `tests/sr-selectors.test.js`. Still to do: a live healthcheck pass with Claude in Chrome.
 

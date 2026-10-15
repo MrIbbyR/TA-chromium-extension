@@ -24,7 +24,12 @@ node --test tests/keyword-expansions.test.js
 
 # E2E (Playwright, dev-only — headed locally, headless when CI=1)
 cd tests/e2e && npm ci && npx playwright test
+
+# Type check (dev-only TypeScript 7, checks only // @ts-check files)
+cd tests/typecheck && npm ci && npx tsc -p tsconfig.json
 ```
+
+**Type checking** is opt-in per file: a file starting with `// @ts-check` is checked by `tsc` in strict mode, using JSDoc types. Add it to `files` in `tests/typecheck/tsconfig.json` when you add the comment (`tests/typecheck-coverage.test.js` fails otherwise). Cross-file globals (`__SR`, `__srKw`, `KEYWORD_EXPANSIONS`…) are declared in `tests/typecheck/globals.d.ts`; `__SR`'s type comes from `sr-selectors.js`, so a misspelt `SR.sel.<name>` is a type error. Checked so far: `keyword-dom.js`, `keyword-matching.js`. Still to do: the other `keyword-*.js` modules. Their imports come through `need()` and are untyped (`any`); type them with `/** @type {typeof import("./keyword-dom.js")} */` when they're checked.
 
 ## Releasing
 
