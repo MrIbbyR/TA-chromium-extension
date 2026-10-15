@@ -13,6 +13,12 @@ async function injectExtensionScripts(page) {
   await page.addScriptTag({ path: path.join(ROOT, "keyword-expansions.js") });
   await page.addScriptTag({ path: path.join(ROOT, "location-gazetteer.js") });
   await page.addScriptTag({ path: path.join(ROOT, "location-infer.js") });
+  await page.addScriptTag({ path: path.join(ROOT, "keyword-dom.js") });
+  await page.addScriptTag({ path: path.join(ROOT, "keyword-matching.js") });
+  await page.addScriptTag({ path: path.join(ROOT, "keyword-extract.js") });
+  await page.addScriptTag({ path: path.join(ROOT, "keyword-pipeline.js") });
+  await page.addScriptTag({ path: path.join(ROOT, "keyword-notes.js") });
+  await page.addScriptTag({ path: path.join(ROOT, "keyword-diag.js") });
   await page.addScriptTag({ path: path.join(ROOT, "keyword-triage-core.js") });
 }
 

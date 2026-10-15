@@ -16,7 +16,7 @@ The tool began as a Python script and was ported to a JS extension. The extensio
 
 ### 1. Code quality inside the current stack (next)
 - **`// @ts-check` + JSDoc types**, with `tsc --noEmit` in CI. TypeScript-level safety, still no build step.
-- **Split `keyword-triage-core.js`** (~3,800 lines, CRLF) into page extraction, matching, notes, and diagnostics files. Load order in `manifest.json` and the popup's `ensureKeywordCore` already supports multiple files.
+- ~~**Split `keyword-triage-core.js`**~~ — done 2026-10-15: `keyword-dom/matching/extract/pipeline/notes/diag.js` (135–970 lines each), core down to ~900 lines of scan orchestration.
 - ~~**All SR page selectors in `sr-selectors.js`**~~ — done 2026-10-15; an SR UI change is now a one-file fix, guarded by `tests/sr-selectors.test.js`. Still to do: a live healthcheck pass with Claude in Chrome.
 
 ### 2. SmartRecruiters API (strategic — needs approval)

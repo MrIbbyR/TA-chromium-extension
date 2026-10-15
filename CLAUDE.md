@@ -50,15 +50,21 @@ After editing any file, click the refresh icon on the extension card in `chrome:
 
 `manifest.json` defines two content script groups injected at `document_idle` on `*.smartrecruiters.com/*`. Order within each group matters:
 
-**Group 1 (all frames):** `sr-selectors.js` → `sr-list-autoscroll.js` → `salary-triage-core.js` → `keyword-expansions.js` → `location-gazetteer.js` → `location-infer.js` → `keyword-triage-core.js`
+**Group 1 (all frames):** `sr-selectors.js` → `sr-list-autoscroll.js` → `salary-triage-core.js` → `keyword-expansions.js` → `location-gazetteer.js` → `location-infer.js` → `keyword-dom.js` → `keyword-matching.js` → `keyword-extract.js` → `keyword-pipeline.js` → `keyword-notes.js` → `keyword-diag.js` → `keyword-triage-core.js`
 
 **Group 2 (main frame only):** `storage-session-shim.js` → `keyword-expansions.js` → `salary-triage-autorun.js` → `keyword-triage-autorun.js`
 
 `sr-selectors.js` must load first: every file that touches the SR DOM reads its selectors from the `__SR` global it defines (see SmartRecruiters Selectors). The popup's `ensureSalaryCore` / `ensureKeywordCore` inject it before the core, `popup.html` loads it before `popup.js`, and `background.js` pulls it in with `importScripts`.
 
-`keyword-expansions.js` must load before `keyword-triage-core.js` because the core file reads `KEYWORD_EXPANSIONS` and `KEYWORD_TYPO_ALIASES` from the global scope set by the expansions file. Likewise `location-gazetteer.js` → `location-infer.js` must precede the core (it reads `__srLocation`); the popup's `ensureKeywordCore` injects them in the same order.
+`keyword-expansions.js` must load before `keyword-matching.js` because it reads `KEYWORD_EXPANSIONS` and `KEYWORD_TYPO_ALIASES` from the global scope set by the expansions file. Likewise `location-gazetteer.js` → `location-infer.js` must precede `keyword-extract.js` (it reads `__srLocation`). The popup's `ensureKeywordCore` and the e2e spec inject the same files in the same order; `tests/keyword-modules.test.js` checks all three lists.
 
 `storage-session-shim.js` must load before the autorun files because they read/write queue state through the `__srSessionGet/Set/Remove` globals it defines (see Storage Locations).
+
+### Keyword Modules
+
+The keyword core is split by job, in load order: `keyword-dom.js` (shadow-piercing queries, visibility, clicks) → `keyword-matching.js` (normalization, `findKeywordHits`, boolean parser; no DOM) → `keyword-extract.js` (resume/header/location/screening text, resume focus and attachment fallback) → `keyword-pipeline.js` (Move Forward, applicant-list harvesting) → `keyword-notes.js` (note body + posting) → `keyword-diag.js` (`lastRunDiag_*` entries) → `keyword-triage-core.js` (runs a scan, queue bootstrap, the `__sr*` entry points).
+
+Each module is an IIFE that puts its exports on `globalThis.__srKw` in the browser and on `module.exports` under Node, and takes what it needs through `need(file, names)` at the top, which throws at load (naming the file) if a loader got the order wrong. A module only depends on modules before it; keep it that way. `keyword-triage-core.js` still re-exports the functions the unit tests import, so tests keep requiring it. The new files are LF; the core stays CRLF.
 
 ### Feature Split: Core vs Autorun
 
@@ -133,13 +139,13 @@ These invariants are enforced by `tests/gdpr-data-handling.test.js`, which scans
 
 `parseSalaryNumber()` handles: Indian formats (LPA, lakhs, crore, Indian comma grouping), Western formats (k/K suffix, currency symbols, plain numbers), and ranges (always returns upper bound). `scoreQuestion()` uses fuzzy hint matching to identify which form field contains the salary question.
 
-### Keyword Matching (`keyword-triage-core.js` + `keyword-expansions.js`)
+### Keyword Matching (`keyword-matching.js` + `keyword-expansions.js`)
 
 Two search modes:
 - **Keywords mode**: comma-separated terms with abbreviation expansion via `keyword-expansions.js`, prefix wildcard support (`Python*`), ISO list splitting, and token-index bigram matching
 - **Boolean mode**: LinkedIn Recruiter syntax parsed into an AST (`parseBooleanQuery` → `evaluateBooleanAst`). Operator precedence: NOT > AND > OR. Implicit AND between adjacent terms. Quoted phrases are single TERM nodes.
 
-### Keyword Notes (`postKeywordHitsToNotes` in `keyword-triage-core.js`)
+### Keyword Notes (`postKeywordHitsToNotes` in `keyword-notes.js`)
 
 Each scanned profile gets a "Note to self", built by `noteBodyLines()` and read top to bottom:
 
@@ -186,7 +192,7 @@ When fixing a queue/tab bug, run the new `tests/background-queue.test.js` scenar
 
 ### Reported keyword misses: diagnose, don't guess
 
-When a user reports "keyword X missed on profile Y", the matching logic in `keyword-triage-core.js` is rarely the cause. A keyword miss can come from any of three layers, and they need different evidence:
+When a user reports "keyword X missed on profile Y", the matching logic in `keyword-matching.js` is rarely the cause. A keyword miss can come from any of three layers, and they need different evidence:
 
 1. **Matching gap** — the canonical/expansion forms in `KEYWORD_EXPANSIONS` don't cover the variant used in the resume. The regex fallback in `sepFlexiblePatternSource` enforces a `(?![A-Za-z0-9])` boundary, so a single-token keyword won't match a longer compound word that contains it (e.g. `docker` won't match `Dockerfile` without an explicit expansion entry). Fix by adding the compound forms to the expansion table.
 2. **Extraction failure** — the resume text never reaches `findKeywordHits`. Common in PDF resumes where pdf.js text layers don't render all pages, or where the resume tab isn't activated in time.

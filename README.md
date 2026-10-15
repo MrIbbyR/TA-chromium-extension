@@ -75,7 +75,14 @@ background.js               Service worker: parallel keyword worker orchestratio
 sr-list-autoscroll.js       Virtual list scroller; harvests candidate profile URLs
 salary-triage-core.js       Salary extraction + budget comparison logic
 salary-triage-autorun.js    URL queue state machine for Cost Assist
-keyword-triage-core.js      Keyword expansion, boolean parser, resume extraction
+sr-selectors.js             Every SmartRecruiters selector + DevTools healthcheck
+keyword-triage-core.js      Keyword scan orchestration (runs the keyword-*.js modules below)
+keyword-dom.js              Shadow-piercing DOM queries and click helpers
+keyword-matching.js         Keyword normalization, matching, boolean parser (no DOM)
+keyword-extract.js          Resume / header / location / screening text from the profile
+keyword-pipeline.js         Move Forward + applicant-list URL harvesting
+keyword-notes.js            Builds and posts the keyword "Note to self"
+keyword-diag.js             Per-profile diagnostics (Inspect diagnostics)
 keyword-triage-autorun.js   Parallel worker state machine + URL queue
 keyword-expansions.js       Shared abbreviation/synonym expansion table
 xlsx-mini.js                Self-contained async XLSX parser (no SheetJS, no DOM parser)
