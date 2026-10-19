@@ -23,7 +23,7 @@
     "sleep", "isVisible", "isDisabledish", "queryDeepSelectorAll", "findElementByIdDeep",
     "dispatchClickAtElementCenter", "getDeepText"
   ]);
-  var extractMod = need("keyword-extract.js", ["getCandidateName", "getCandidateLocation"]);
+  var extractMod = need("keyword-extract.js", ["getCandidateName", "getCandidateLocation", "getCandidateHeadline"]);
   var sleep = domMod.sleep,
       isVisible = domMod.isVisible,
       isDisabledish = domMod.isDisabledish,
@@ -32,7 +32,8 @@
       dispatchClickAtElementCenter = domMod.dispatchClickAtElementCenter,
       getDeepText = domMod.getDeepText;
   var getCandidateName = extractMod.getCandidateName,
-      getCandidateLocation = extractMod.getCandidateLocation;
+      getCandidateLocation = extractMod.getCandidateLocation,
+      getCandidateHeadline = extractMod.getCandidateHeadline;
 
   /* ── Post keyword hits to the Notes tab on the prospect profile ── */
 
@@ -313,13 +314,15 @@
   }
 
   /**
-   * Note body as lines, read top to bottom: location first, then the match
+   * Note body as lines, read top to bottom: current role ("Current: Data
+   * Annotator at Samsung…", the headline under the name), location, then the match
    * count, then one line per matched keyword, capitalised (a comma-joined row was
    * hard to scan), with a blank line between the count and the list. Zero hits
    * stays a single "No keyword tagged - Matched 0/N" line.
    */
-  function noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location) {
+  function noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline) {
     var lines = [];
+    if (headline) lines.push("Current: " + headline);
     if (location) lines.push("Location: " + location);
     var matched = "Matched " + hitCount + "/" + totalKeywords;
     if (hitCount === 0 || !hitLabels || !hitLabels.length) {
@@ -333,8 +336,8 @@
     return lines;
   }
 
-  function formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location) {
-    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location);
+  function formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline) {
+    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline);
     // SR notes are plain-text, so name + URL go in as a plain header line (no markup).
     var header = [candidateName, profileUrl].filter(function (p) { return p; }).join(" | ");
     if (header) lines.unshift(header);
@@ -351,8 +354,8 @@
    * hyperlink instead of a bare URL. Used ONLY when the notes field is a
    * contenteditable rich editor — a plain <textarea> cannot hold an anchor.
    */
-  function formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location) {
-    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location).map(escapeHtml);
+  function formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline) {
+    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline).map(escapeHtml);
     var parts = [];
     if (candidateName) parts.push(escapeHtml(candidateName));
     if (profileUrl) parts.push('<a href="' + escapeHtml(profileUrl) + '">SR Profile</a>');
@@ -746,7 +749,12 @@
       // Method only — the location itself is candidate data and stays out of the log.
       log.push({ ok: true, msg: "Notes: location " + (location ? "via " + loc.method : "not found") });
     } catch (_) {}
-    var noteText = formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location);
+    var headline = "";
+    try {
+      headline = getCandidateHeadline(doc, candidateName);
+      log.push({ ok: true, msg: "Notes: current role " + (headline ? "found" : "not found") });
+    } catch (_) {}
+    var noteText = formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline);
     var itag = (input.tagName || "").toLowerCase();
     var isRichEditor = (itag !== "textarea" && itag !== "input");
 
@@ -769,7 +777,7 @@
         input.focus();
         var rsel = ownerWin.getSelection && ownerWin.getSelection();
         if (rsel && rsel.selectAllChildren) rsel.selectAllChildren(input);
-        var noteHtml = formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location);
+        var noteHtml = formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline);
         usedRichHtml = ownerDoc.execCommand("insertHTML", false, noteHtml);
       } catch (_) {}
       if (usedRichHtml) {

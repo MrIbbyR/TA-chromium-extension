@@ -156,6 +156,7 @@ Each scanned profile gets a "Note to self", built by `noteBodyLines()` and read 
 
 ```
 Ranel Tartu | SR Profile                ← name | link (must stay a working link)
+Current: Engineer at Acme              ← headline under the name ("<title> at <company>"); omitted if none
 Location: Tallinn, Estonia (verified)   ← see Candidate Location below
 Matched 2/17:                           ← boolean prefix ("Boolean: ", "[FAIL] ") goes here
                                         ← blank line (only when there are hits)

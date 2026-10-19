@@ -556,6 +556,42 @@
   }
 
   /**
+   * First "<title> at <company>" line among texts, e.g. "Data Annotator at
+   * Samsung R&D Institute India - Bangalore". The " at " shape keeps the
+   * location slot, phone numbers and the name itself out.
+   */
+  function pickCandidateHeadline(texts, name) {
+    var norm = String(name || "").replace(/\s+/g, " ").trim().toLowerCase();
+    for (var i = 0; i < (texts || []).length; i++) {
+      var lines = String(texts[i] || "").split(/\n+/);
+      for (var j = 0; j < lines.length; j++) {
+        var t = lines[j].replace(/\s+/g, " ").trim();
+        if (t.length < 5 || t.length > 200) continue;
+        if (norm && t.toLowerCase() === norm) continue;
+        if (/^applied\b/i.test(t)) continue;
+        if (/\S\s+(?:at|@)\s+\S/i.test(t)) return t;
+      }
+    }
+    return "";
+  }
+
+  /**
+   * The headline under the candidate's name (current title and company): the
+   * personal-info row first, then the candidate header blob.
+   */
+  function getCandidateHeadline(doc, name) {
+    var texts = [];
+    try {
+      var inputs = getProfileLocationInputs(doc);
+      texts = inputs.otherTexts.concat(inputs.slotTexts);
+    } catch (_) {}
+    var hit = pickCandidateHeadline(texts, name);
+    if (hit) return hit;
+    try { return pickCandidateHeadline([getCandidateHeaderText(doc)], name); } catch (_) {}
+    return "";
+  }
+
+  /**
    * Extract text from pdf.js text layers — SR sometimes renders resumes via
    * pdf.js which overlays <span> elements on a <canvas>.  The canvas itself
    * is pixels (invisible to innerText) but the text layer spans are real DOM.
@@ -867,6 +903,8 @@
     elText: elText,
     getProfileLocationInputs: getProfileLocationInputs,
     getCandidateLocation: getCandidateLocation,
+    pickCandidateHeadline: pickCandidateHeadline,
+    getCandidateHeadline: getCandidateHeadline,
     getPdfTextLayerText: getPdfTextLayerText,
     getProfileOverviewText: getProfileOverviewText,
     getFullPageText: getFullPageText,

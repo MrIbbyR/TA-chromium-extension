@@ -447,6 +447,31 @@ describe('formatNoteText', () => {
   });
 });
 
+describe('current role line', () => {
+  const { pickCandidateHeadline } = require('../keyword-extract.js');
+  it('puts "Current:" under the name, above the location', () => {
+    const out = formatNoteText(['nlp'], 1, 5, '', 'Jane', 'https://x.test/a', false, 'Chennai, India (verified)',
+      'Data Annotator at Samsung R&D Institute India');
+    assert.strictEqual(out,
+      'Jane | https://x.test/a\nCurrent: Data Annotator at Samsung R&D Institute India\n' +
+      'Location: Chennai, India (verified)\nMatched 1/5:\n\nNLP');
+  });
+  it('escapes the role in the rich-text note', () => {
+    const out = formatNoteHtml([], 0, 2, '', 'Jane', 'https://x.test/a', false, '', 'Engineer at R&D <Lab>');
+    assert.ok(out.includes('<br>Current: Engineer at R&amp;D &lt;Lab&gt;<br>No keyword tagged'));
+  });
+  it('picks the "<title> at <company>" line, skipping location, phone and name', () => {
+    assert.strictEqual(
+      pickCandidateHeadline(['Chennai, Tamil Nadu, India', '+91 98765 43210',
+        'Data Annotator at Samsung R&D Institute India - Bangalore(via SEED Data Lab, VIT Chennai)'], 'P P'),
+      'Data Annotator at Samsung R&D Institute India - Bangalore(via SEED Data Lab, VIT Chennai)');
+    assert.strictEqual(pickCandidateHeadline(['Jane Doe\nSRE @ Acme'], 'Jane Doe'), 'SRE @ Acme');
+  });
+  it('returns "" when no line has the role shape', () => {
+    assert.strictEqual(pickCandidateHeadline(['Pune, India', 'Applied at 10:00'], ''), '');
+  });
+});
+
 describe('displayKeywordLabel — keywords in the note are capitalised', () => {
   it('capitalises a plain keyword and keeps the count', () => {
     assert.strictEqual(displayKeywordLabel('scrapy (x3)'), 'Scrapy (x3)');
