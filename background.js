@@ -32,6 +32,32 @@ ensureSessionAccess();
 chrome.runtime.onInstalled.addListener(() => { ensureSessionAccess(); });
 chrome.runtime.onStartup.addListener(() => { ensureSessionAccess(); });
 
+// Dev shortcut (manifest "commands": ⌘⇧U / Ctrl+Shift+U): reload the extension, then
+// refresh every SmartRecruiters tab — a reload doesn't re-inject content scripts into
+// tabs already open. scripts/package.sh strips "commands", so shipped builds have no
+// shortcut. The flag goes in storage.local because the reload clears storage.session;
+// it only counts for DEV_RELOAD_MAX_AGE_MS, so a reload that never happened can't
+// refresh SR tabs on some later wake-up (mid-run).
+const DEV_RELOAD_FLAG = "srDevReloadPending";
+const DEV_RELOAD_MAX_AGE_MS = 30000;
+const isSrTabUrl = (u) => /^https:\/\/([^/]*\.)?smartrecruiters\.com\//.test(u || "");
+if (chrome.commands && chrome.commands.onCommand) {
+  chrome.commands.onCommand.addListener((command) => {
+    if (command !== "dev-reload") return;
+    chrome.storage.local.set({ [DEV_RELOAD_FLAG]: Date.now() }).then(() => chrome.runtime.reload());
+  });
+}
+chrome.storage.local.get(DEV_RELOAD_FLAG).then(async (got) => {
+  const at = got && got[DEV_RELOAD_FLAG];
+  if (!at) return;
+  await chrome.storage.local.remove(DEV_RELOAD_FLAG);
+  if (Date.now() - at > DEV_RELOAD_MAX_AGE_MS) return;
+  const tabs = await chrome.tabs.query({});
+  for (const t of tabs) {
+    if (isSrTabUrl(t.url)) chrome.tabs.reload(t.id).catch(() => {});
+  }
+}).catch(() => {});
+
 /** Randomized delay — returns ms ± ~35% spread to avoid fixed-cadence bot detection. */
 function jitter(baseMs) {
   const lo = Math.round(baseMs * 0.65);

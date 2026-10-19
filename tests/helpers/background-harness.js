@@ -153,6 +153,11 @@ function createBrowser(opts = {}) {
       onMessage: makeEvent(listeners.message),
       onInstalled: makeEvent(listeners.installed),
       onStartup: makeEvent(listeners.startup),
+      // chrome.runtime.reload(): the extension restarts — a fresh SW, storage.session cleared.
+      reload() {
+        events.push(['ext-reload', clock.now]);
+        addTimer(BROWSER, 0, () => { killSW(); store.session = {}; ensureSW(); });
+      },
     };
     // Chrome: callback given -> returns undefined and reports errors via lastError.
     function withCb(promise, cb) {
@@ -241,6 +246,13 @@ function createBrowser(opts = {}) {
           if (q && q.windowId != null) list = list.filter((t) => t.windowId === q.windowId);
           return withCb(Promise.resolve(list.map(pubTab)), cb);
         },
+        reload(id) {
+          const t = tabs.get(id);
+          if (!t) return noTab(id);
+          events.push(['tab-reload', id, clock.now]);
+          navigate(t, t.url);
+          return Promise.resolve();
+        },
         onCreated: makeEvent(listeners.tabCreated),
         onRemoved: makeEvent(listeners.tabRemoved),
         onUpdated: makeEvent(listeners.tabUpdated),
@@ -265,6 +277,7 @@ function createBrowser(opts = {}) {
         },
         getLastFocused() { return Promise.resolve({ id: focusedWindowId, focused: true }); },
       },
+      commands: { onCommand: makeEvent(listeners.command) },
       notifications: {
         create(id, options) { notifications.push({ id, ...clone(options), at: clock.now }); },
       },
@@ -318,7 +331,7 @@ function createBrowser(opts = {}) {
     const owner = { kind: 'sw', gen };
     const listeners = {
       message: [], installed: [], startup: [],
-      tabCreated: [], tabRemoved: [], tabUpdated: [], alarm: [],
+      tabCreated: [], tabRemoved: [], tabUpdated: [], alarm: [], command: [],
     };
     const chrome = makeChrome(owner, listeners);
     const ctx = vm.createContext({
@@ -414,6 +427,8 @@ function createBrowser(opts = {}) {
     advance, runUntil, killSW, bootSW,
     get swAlive() { return !!sw; },
     sendFromPopup: (message) => sendToSW(message, {}),
+    // A keyboard shortcut from manifest "commands" (fires commands.onCommand).
+    fireCommand: (name) => fireSW('command', [name]),
     // The recruiter closing a tab by hand (fires tabs.onRemoved, waking the SW if needed).
     // In-page route change (pushState): the URL changes but the page — and its content
     // script — keeps running.

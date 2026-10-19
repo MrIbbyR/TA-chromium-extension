@@ -13,6 +13,12 @@ zip -qr "$OUT" . \
   -x '.git/*' '.github/*' '.claude/*' '.gitignore' '*.DS_Store' \
      'tests/*' 'scripts/*' 'dist/*' '*.md' '*.zip' 'NIQ logo.png'
 
+# Swap in the shipped manifest: no dev-only keys (the dev-reload shortcut).
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+node scripts/ship-manifest.js > "$STAGE/manifest.json"
+(cd "$STAGE" && zip -q "$OLDPWD/$OUT" manifest.json)
+
 # Sanity check: manifest.json must be at the zip root or Chrome rejects the upload.
 # grep without -q reads all input: -q exits on the first match, and under pipefail the
 # SIGPIPE that kills unzip would fail the check even though the manifest is there.

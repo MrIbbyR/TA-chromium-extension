@@ -16,6 +16,12 @@
       "48": "icon.png"
     }
   },
+  "commands": {
+    "dev-reload": {
+      "suggested_key": { "default": "Ctrl+Shift+U", "mac": "Command+Shift+U" },
+      "description": "Dev: reload the extension and every SmartRecruiters tab"
+    }
+  },
   "icons": {
     "48": "icon.png"
   },
