@@ -276,7 +276,81 @@
     }
   }
 
+  /* ── Job country (salary-in-notes gate) ── */
+
+  // EU 27 + EEA (Iceland, Liechtenstein, Norway): the EU Pay Transparency Directive
+  // bars asking candidates about pay history, so salary never goes in notes there.
+  var EEA_COUNTRIES = ["austria", "belgium", "bulgaria", "croatia", "cyprus", "czechia",
+    "czech republic", "denmark", "estonia", "finland", "france", "germany", "greece", "hungary",
+    "ireland", "italy", "latvia", "lithuania", "luxembourg", "malta", "netherlands",
+    "the netherlands", "poland", "portugal", "romania", "slovakia", "slovenia", "spain", "sweden",
+    "iceland", "liechtenstein", "norway"];
+
+  function isEeaCountry(country) {
+    var c = String(country || "").toLowerCase().replace(/\s+/g, " ").trim();
+    return EEA_COUNTRIES.indexOf(c) >= 0;
+  }
+
+  /** Salary goes in notes only for a known, non-EU/EEA job country (unknown → off). */
+  function salaryAllowedForJobCountry(country) {
+    return !!String(country || "").trim() && !isEeaCountry(country);
+  }
+
+  /** [{ name, value }] → the "Job Country" value, else any "…Country" field, else "". */
+  function jobCountryFromFields(rows) {
+    var clean = function (s) { return String(s || "").replace(/\*/g, "").replace(/\s+/g, " ").trim(); };
+    var byName = function (re) {
+      for (var i = 0; i < rows.length; i++) if (re.test(clean(rows[i].name)) && clean(rows[i].value)) return clean(rows[i].value);
+      return "";
+    };
+    return byName(/^job country$/i) || byName(/\bcountry\b/i);
+  }
+
+  function readJobFieldRows(doc, win) {
+    var root = doc.documentElement || doc.body;
+    var lis = [];
+    try { lis = queryDeepSelectorAll(root, win, SR.sel.jobFormField); } catch (_) {}
+    return lis.map(function (li) {
+      var n = li.querySelector(SR.sel.jobFieldName), v = li.querySelector(SR.sel.jobFieldValue);
+      return { name: n ? n.textContent : "", value: v ? v.textContent : "" };
+    });
+  }
+
+  /**
+   * Run start, on the job page: open the Job details tab, read Job Country, then go
+   * back to Applicants (the list is harvested before this, so it needn't reload).
+   * Returns { country, salaryNotes, reason }.
+   */
+  async function readJobCountry(doc, win) {
+    var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+    var root = doc.documentElement || doc.body;
+    var country = jobCountryFromFields(readJobFieldRows(doc, win));
+    var reason = "";
+    if (!country) {
+      var tab = null;
+      try { tab = queryDeepSelectorAll(root, win, SR.sel.jobDetailsTabLink)[0]; } catch (_) {}
+      if (!tab) {
+        reason = "no_job_details_tab";
+      } else {
+        try { tab.click(); } catch (_) {}
+        for (var t = 0; t < 8000 && !country; t += 250) {
+          await wait(250);
+          country = jobCountryFromFields(readJobFieldRows(doc, win));
+        }
+        if (!country) reason = "no_job_country_field";
+        var back = null;
+        try { back = queryDeepSelectorAll(root, win, SR.sel.jobApplicantsTabLink)[0]; } catch (_) {}
+        if (back) { try { back.click(); } catch (_) {} }
+      }
+    }
+    return { country: country, salaryNotes: salaryAllowedForJobCountry(country), reason: reason || (isEeaCountry(country) ? "eea" : "") };
+  }
+
   var api = {
+    isEeaCountry: isEeaCountry,
+    salaryAllowedForJobCountry: salaryAllowedForJobCountry,
+    jobCountryFromFields: jobCountryFromFields,
+    readJobCountry: readJobCountry,
     MOVE_FORWARD_ID: MOVE_FORWARD_ID,
     resolveMoveForwardClickTarget: resolveMoveForwardClickTarget,
     fireMoveForwardPipelineClick: fireMoveForwardPipelineClick,

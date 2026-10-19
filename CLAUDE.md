@@ -158,6 +158,8 @@ Each scanned profile gets a "Note to self", built by `noteBodyLines()` and read 
 Ranel Tartu | SR Profile                ← name | link (must stay a working link)
 Current: Engineer at Acme              ← headline under the name ("<title> at <company>"); omitted if none
 Location: Tallinn, Estonia (verified)   ← see Candidate Location below
+Current CTC: 2–5 L INR                  ← salary screening answers (salaryNoteLines); omitted if none
+Expected CTC: 8–11 L INR
 Matched 2/17:                           ← boolean prefix ("Boolean: ", "[FAIL] ") goes here
                                         ← blank line (only when there are hits)
 Scrapy (x3)                             ← one keyword per line, no bullets
@@ -166,6 +168,7 @@ WAF (x2)
 ```
 
 - Zero hits is one line: `No keyword tagged - Matched 0/N`.
+- **Salary lines are gated by job country.** At run start the popup calls `__srReadJobCountry` (`readJobCountry` in `keyword-pipeline.js`) on the job page: Job details tab → "Job Country" field → back to Applicants. Only a known, non-EU/EEA country sets `config.salaryNotes` (EU Pay Transparency Directive: no pay-history questions); unknown → off. Then the core opens the Screening tab (`readScreeningTab`) — the answers aren't in the DOM on the Profile tab.
 - `displayKeywordLabel()` capitalises keywords **for the note only** (results, diagnostics and the popup keep the matched text): a keyword typed with capitals keeps its spelling; known terms use `KEYWORD_DISPLAY_CASE` (WAF, AWS, PhD, PyTorch, FMCG…, add to it); otherwise each word is capitalised, small words ("and", "of") stay lowercase.
 - Two insert paths: a contenteditable rich editor gets `formatNoteHtml` via `execCommand("insertHTML")` so "SR Profile" is a real `<a>`; a `<textarea>` gets `formatNoteText` (plain, bare URL). **The SR Profile link is a hard requirement** — don't switch the rich editor to plain text to fix layout.
 - Save confirmation (`noteConfirmMarker`) looks for the `matched N/T` text appearing in the notes feed (before vs after Post, via `feedDeltaCount`) — not the keyword list, whose lines may run together in the feed's textContent.

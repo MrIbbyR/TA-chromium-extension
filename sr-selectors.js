@@ -53,6 +53,13 @@
     // ── Page structure ──
     candidateView:  { sel: "#" + ID.candidateView,  desc: "Candidate view root container",     critical: true  },
     jobDetailsPage: { sel: "#" + ID.jobDetailsPage, desc: "Job details / applicant list page", critical: false },
+    // Job page tabs are router links: "details/<jobId>/details", "details/<jobId>/people".
+    jobDetailsTabLink: { sel: 'a[href$="/details"]', desc: "Job page: Job details tab", critical: false, matchText: "Job details" },
+    jobApplicantsTabLink: { sel: 'a[href$="/people"]', desc: "Job page: Applicants tab", critical: false, matchText: "Applicants" },
+    // Job details fields: li > name (".spl-text-primary", "Job Country *") + value (".spl-text-secondary").
+    jobFormField: { sel: "sr-job-form-custom-fields li", desc: "Job details: one field row", critical: false },
+    jobFieldName: { sel: "spl-typography-body.spl-text-primary", desc: "Job details: field name", critical: false },
+    jobFieldValue: { sel: "spl-typography-body.spl-text-secondary", desc: "Job details: field value", critical: false },
     signInPassword: { sel: 'input[type="password"]', desc: "Sign-in form (logged out)",        critical: false },
 
     // DataDome (SR's bot protection) serves its challenge from captcha-delivery.com.

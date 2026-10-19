@@ -1317,6 +1317,25 @@ async function handleKwGo(workers) {
       setKwGoDisabled(false);
       return;
     }
+    // Salary goes in notes only for a known, non-EU/EEA job country (pay-history rules).
+    // Read after the harvest: it switches the job page to Job details and back.
+    cfg.salaryNotes = false;
+    try {
+      const [jc] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: false },
+        func: () => (typeof globalThis.__srReadJobCountry === "function" ? globalThis.__srReadJobCountry() : null),
+      });
+      const job = jc?.result;
+      cfg.salaryNotes = !!job?.salaryNotes;
+      if (job?.country) {
+        kwLog(cfg.salaryNotes ? "✓" : "·", "Job country: " + job.country +
+          (cfg.salaryNotes ? " — current/expected salary goes in notes." : " (EU/EEA) — salary left out of notes."));
+      } else {
+        kwLog("·", "Job country not found — salary left out of notes.");
+      }
+    } catch (_) {
+      kwLog("·", "Job country not read — salary left out of notes.");
+    }
     kwLog("✓", "Found " + urls.length + " profiles. Starting " + workers + "× parallel workers…");
     // Worker tabs persist queue progress in chrome.storage.session — make sure it is
     // writable from content scripts before they launch.

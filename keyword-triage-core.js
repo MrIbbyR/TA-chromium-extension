@@ -28,10 +28,11 @@
     "nudgeResumeViewerScroll", "requestResumeRenderFocus", "releaseResumeRenderFocus",
     "describeResumeViewer", "tryAttachmentResumeFallback", "getCandidateHeaderText",
     "getPdfTextLayerText", "getProfileOverviewText", "getFullPageText", "getScreeningText",
-    "ensureResumeTabActive", "makeResumeTextWaiter", "ensureProfileTabActive"
+    "ensureResumeTabActive", "makeResumeTextWaiter", "ensureProfileTabActive",
+    "salaryNoteLines", "readScreeningTab"
   ]);
   var pipelineMod = need("keyword-pipeline.js", [
-    "hasSrProfileChrome", "harvestProfileUrls", "collectApplicantClickTargets", "fireClick"
+    "hasSrProfileChrome", "harvestProfileUrls", "collectApplicantClickTargets", "fireClick", "readJobCountry"
   ]);
   var notesMod = need("keyword-notes.js", [
     "displayKeywordLabel", "formatNoteText", "formatNoteHtml", "noteConfirmMarker", "feedDeltaCount",
@@ -75,11 +76,14 @@
       getScreeningText = extractMod.getScreeningText,
       ensureResumeTabActive = extractMod.ensureResumeTabActive,
       makeResumeTextWaiter = extractMod.makeResumeTextWaiter,
-      ensureProfileTabActive = extractMod.ensureProfileTabActive;
+      ensureProfileTabActive = extractMod.ensureProfileTabActive,
+      salaryNoteLines = extractMod.salaryNoteLines,
+      readScreeningTab = extractMod.readScreeningTab;
   var hasSrProfileChrome = pipelineMod.hasSrProfileChrome,
       harvestProfileUrls = pipelineMod.harvestProfileUrls,
       collectApplicantClickTargets = pipelineMod.collectApplicantClickTargets,
-      fireClick = pipelineMod.fireClick;
+      fireClick = pipelineMod.fireClick,
+      readJobCountry = pipelineMod.readJobCountry;
   var displayKeywordLabel = notesMod.displayKeywordLabel,
       formatNoteText = notesMod.formatNoteText,
       formatNoteHtml = notesMod.formatNoteHtml,
@@ -369,10 +373,19 @@
     // to avoid mislabelling a profile whose resume never loaded as having no keywords.
     var shouldPostNote = postToNotes && (hitCount > 0 || textLen >= 200);
     if (shouldPostNote) {
+      // Salary answers are on the Screening tab, not the Profile tab: open it only
+      // when the profile-tab text had none (it is a note-only field). Off unless the
+      // popup found a non-EU/EEA job country at run start (config.salaryNotes).
+      if (!config.salaryNotes) {
+        log.push({ ok: true, msg: "Salary: off for this run (job country EU/EEA or unknown)" });
+      } else if (!salaryNoteLines(screeningText).length) {
+        try { var tabScreening = await readScreeningTab(doc, win, log); if (tabScreening) screeningText = tabScreening; } catch (_) {}
+      }
+      phase.mark("screeningTab");
       try { await prepareNotesSection(doc, win, log); } catch (_) {}
       phase.mark("notesPrepare");
       try {
-        notesPosted = await postKeywordHitsToNotes(doc, win, hitLabels, hitCount, userKeywordCount, log, "", { partialScan: !resumeWasRead(resumeText, resumeIsChrome), resumeText: resumeWasRead(resumeText, resumeIsChrome) ? resumeText : "" });
+        notesPosted = await postKeywordHitsToNotes(doc, win, hitLabels, hitCount, userKeywordCount, log, "", { partialScan: !resumeWasRead(resumeText, resumeIsChrome), resumeText: resumeWasRead(resumeText, resumeIsChrome) ? resumeText : "", screeningText: config.salaryNotes ? screeningText : "" });
       } catch (e) {
         log.push({ ok: false, msg: "Notes post error: " + ((e && e.message) || String(e)) });
       }
@@ -709,11 +722,20 @@
     // "No keyword tagged" note). Skip on extraction failures to avoid false negatives.
     var shouldPostBoolNote = postToNotes && (allHitLabels.length > 0 || textLen >= 200);
     if (shouldPostBoolNote) {
+      // Salary answers are on the Screening tab, not the Profile tab: open it only
+      // when the profile-tab text had none (it is a note-only field). Off unless the
+      // popup found a non-EU/EEA job country at run start (config.salaryNotes).
+      if (!config.salaryNotes) {
+        log.push({ ok: true, msg: "Salary: off for this run (job country EU/EEA or unknown)" });
+      } else if (!salaryNoteLines(screeningText).length) {
+        try { var tabScreening = await readScreeningTab(doc, win, log); if (tabScreening) screeningText = tabScreening; } catch (_) {}
+      }
+      phase.mark("screeningTab");
       try { await prepareNotesSection(doc, win, log); } catch (_) {}
       phase.mark("notesPrepare");
       var boolPrefix = booleanPass ? "[PASS] " : "[FAIL] ";
       try {
-        notesPosted = await postKeywordHitsToNotes(doc, win, allHitLabels, allHitLabels.length, totalTerms, log, boolPrefix, { partialScan: !resumeWasRead(resumeText, resumeIsChromeBool), resumeText: resumeWasRead(resumeText, resumeIsChromeBool) ? resumeText : "" });
+        notesPosted = await postKeywordHitsToNotes(doc, win, allHitLabels, allHitLabels.length, totalTerms, log, boolPrefix, { partialScan: !resumeWasRead(resumeText, resumeIsChromeBool), resumeText: resumeWasRead(resumeText, resumeIsChromeBool) ? resumeText : "", screeningText: config.salaryNotes ? screeningText : "" });
       } catch (e) {
         log.push({ ok: false, msg: "Notes post error: " + ((e && e.message) || String(e)) });
       }
@@ -950,6 +972,9 @@
   };
   globalThis.__srWaitForResumeText = function (maxMs) {
     return makeResumeTextWaiter(document, maxMs);
+  };
+  globalThis.__srReadJobCountry = function () {
+    return readJobCountry(document, window);
   };
   globalThis.__srHarvestProfileUrls = function () {
     return harvestProfileUrls(document, window);

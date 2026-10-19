@@ -472,6 +472,50 @@ describe('current role line', () => {
   });
 });
 
+describe('salary lines from screening answers', () => {
+  const { salaryNoteLines, parseSalaryBand } = require('../keyword-extract.js');
+  const INDIA = 'Screening Questions\nPlease enter your Annual Current CTC in INR:\n2,00,000 to 5,00,000 INR\n\n' +
+    'Please enter your Annual Expected CTC in INR:\n8,00,000 to 11,00,000 INR';
+  it('normalises Indian bands to lakhs', () => {
+    assert.deepEqual(salaryNoteLines(INDIA), ['Current CTC: 2–5 L INR', 'Expected CTC: 8–11 L INR']);
+  });
+  it('exact figures stay exact', () => {
+    assert.deepEqual(salaryNoteLines('Current CTC:\n12 LPA\nExpected CTC:\n15 LPA'),
+      ['Current CTC: 12 L INR', 'Expected CTC: 15 L INR']);
+  });
+  it('non-INR uses k and the question wording ("salary")', () => {
+    assert.deepEqual(
+      salaryNoteLines('What is your current gross annual salary?\n€45,000\nWhat are your salary expectations?\n50k - 55k EUR'),
+      ['Current salary: 45k EUR', 'Expected salary: 50–55k EUR']);
+  });
+  it('marks a monthly figure', () => {
+    assert.deepEqual(
+      salaryNoteLines('Current monthly salary in USD?\n4,500\nExpected annual salary in USD?\n70000'),
+      ['Current salary (monthly): 4.5k USD', 'Expected salary: 70k USD']);
+  });
+  it('keeps an unparseable answer as typed', () => {
+    assert.deepEqual(salaryNoteLines('Expected CTC?\nNegotiable'), ['Expected CTC: Negotiable']);
+  });
+  it('ignores non-salary questions and empty text', () => {
+    assert.deepEqual(salaryNoteLines('Notice period in days?\n30\nAre you willing to relocate?\nYes'), []);
+    assert.deepEqual(salaryNoteLines(''), []);
+  });
+  it('parses open bands, units and currencies', () => {
+    assert.deepEqual(parseSalaryBand('8 to 11 LPA'), { lo: 800000, hi: 1100000, currency: 'INR' });
+    assert.deepEqual(parseSalaryBand('Above 30,00,000 INR'), { lo: 3000000, hi: null, currency: 'INR' });
+    assert.deepEqual(parseSalaryBand('Up to 5 LPA'), { lo: null, hi: 500000, currency: 'INR' });
+    assert.deepEqual(parseSalaryBand('$120,000 - $140,000'), { lo: 120000, hi: 140000, currency: 'USD' });
+    assert.equal(parseSalaryBand('n/a'), null);
+  });
+  it('salary lines sit after the location, before the match count', () => {
+    const out = formatNoteText(['aws'], 1, 2, '', 'Jane', 'https://x.test/a', false, 'Pune, India', 'SRE at Acme',
+      ['Current CTC: 2–5 L INR', 'Expected CTC: 8–11 L INR']);
+    assert.strictEqual(out,
+      'Jane | https://x.test/a\nCurrent: SRE at Acme\nLocation: Pune, India\n' +
+      'Current CTC: 2–5 L INR\nExpected CTC: 8–11 L INR\nMatched 1/2:\n\nAWS');
+  });
+});
+
 describe('displayKeywordLabel — keywords in the note are capitalised', () => {
   it('capitalises a plain keyword and keeps the count', () => {
     assert.strictEqual(displayKeywordLabel('scrapy (x3)'), 'Scrapy (x3)');
@@ -736,5 +780,28 @@ describe('resumeWasRead — partial-scan honesty (resume PDF actually read?)', (
   it('false when the resume failed to load (empty/sub-50 chars)', () => {
     assert.strictEqual(resumeWasRead('', false), false);
     assert.strictEqual(resumeWasRead('   short   ', false), false);
+  });
+});
+
+describe('job country gate for salary in notes', () => {
+  const { isEeaCountry, salaryAllowedForJobCountry, jobCountryFromFields } = require('../keyword-pipeline.js');
+  it('reads "Job Country" (asterisk and spacing stripped), ahead of other country fields', () => {
+    const rows = [
+      { name: 'Company *', value: 'NIQ' },
+      { name: 'Compensation Country', value: 'Germany' },
+      { name: 'Job Country *', value: ' India ' },
+    ];
+    assert.equal(jobCountryFromFields(rows), 'India');
+    assert.equal(jobCountryFromFields([{ name: 'Country', value: 'Spain' }]), 'Spain');
+    assert.equal(jobCountryFromFields([{ name: 'Job Level', value: '' }]), '');
+  });
+  it('EU/EEA countries are recognised, case-insensitively', () => {
+    for (const c of ['Germany', 'the netherlands', 'Czech Republic', 'Norway', 'IRELAND']) assert.ok(isEeaCountry(c), c);
+    for (const c of ['India', 'United Kingdom', 'Switzerland', 'United States', 'Czech', '']) assert.ok(!isEeaCountry(c), c);
+  });
+  it('salary is allowed only for a known non-EU/EEA country', () => {
+    assert.equal(salaryAllowedForJobCountry('India'), true);
+    assert.equal(salaryAllowedForJobCountry('Poland'), false);
+    assert.equal(salaryAllowedForJobCountry(''), false);
   });
 });

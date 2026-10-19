@@ -575,6 +575,156 @@
     return "";
   }
 
+  /* ── Salary from screening answers (current / expected CTC) ── */
+
+  var CURRENCY_CODES = ["INR", "EUR", "USD", "GBP", "SGD", "AUD", "CAD", "AED", "MYR", "PHP",
+    "PLN", "CHF", "JPY", "CNY", "HKD", "NZD", "ZAR", "BRL", "MXN", "BGN", "RON", "CZK", "HUF", "SEK", "NOK", "DKK"];
+
+  function detectCurrency(s) {
+    s = String(s || "");
+    if (/₹|\brs\.?(?=\s|\d)|rupee/i.test(s)) return "INR";
+    var m = new RegExp("\\b(" + CURRENCY_CODES.join("|") + ")\\b", "i").exec(s);
+    if (m) return m[1].toUpperCase();
+    if (/€/.test(s)) return "EUR";
+    if (/£/.test(s)) return "GBP";
+    if (/\$/.test(s)) return "USD";
+    return "";
+  }
+
+  /** Multiplier named right after a number: "25 LPA", "1.2 Cr", "45k", "2 million". */
+  function unitMult(s) {
+    s = String(s || "").toLowerCase().replace(/^\s*\+/, "");
+    if (/^\s*(?:cr|crores?)\b/.test(s)) return 1e7;
+    if (/^\s*(?:l|lpa|lakhs?|lacs?|lakh)\b/.test(s)) return 1e5;
+    if (/^\s*(?:m|mn|million)\b/.test(s)) return 1e6;
+    if (/^\s*k\b/.test(s)) return 1e3;
+    return 0;
+  }
+
+  /**
+   * "2,00,000 to 5,00,000 INR" → { lo: 200000, hi: 500000, currency: "INR" }.
+   * Open bands: "Above 30 LPA" → { lo, hi: null }; "Up to 5 LPA" → { lo: null, hi }.
+   * A unit on either side applies to both ("8 to 11 LPA"). null if no number.
+   */
+  function parseSalaryBand(text) {
+    var s = String(text || "").replace(/[–—]/g, "-");
+    var re = /\d[\d,]*(?:\.\d+)?/g, m, nums = [];
+    while ((m = re.exec(s))) nums.push({ v: parseFloat(m[0].replace(/,/g, "")), end: m.index + m[0].length, start: m.index });
+    if (!nums.length) return null;
+    var mults = nums.map(function (n, i) {
+      var seg = s.slice(n.end, i + 1 < nums.length ? nums[i + 1].start : s.length);
+      return unitMult(seg);
+    });
+    var shared = 0;
+    for (var k = 0; k < mults.length; k++) if (mults[k]) shared = mults[k];
+    var vals = nums.map(function (n, i) { return n.v * (mults[i] || shared || 1); });
+    var currency = detectCurrency(s);
+    // Indian lakh grouping (2,00,000) or a lakh/crore unit means rupees.
+    if (!currency && (/\d,\d\d,\d{3}/.test(s) || shared === 1e5 || shared === 1e7)) currency = "INR";
+    var isRange = vals.length >= 2 && (/\d[^\d]*?(?:-|\bto\b)\s*[^\d]*\d/i.test(s) || /\bbetween\b/i.test(s));
+    if (isRange) return { lo: Math.min(vals[0], vals[1]), hi: Math.max(vals[0], vals[1]), currency: currency };
+    var v = vals[0];
+    if (/\b(?:above|over|more than|greater than|min(?:imum)?)\b|\d\s*\+/i.test(s)) return { lo: v, hi: null, currency: currency };
+    if (/\b(?:below|under|less than|up ?to|max(?:imum)?)\b/i.test(s)) return { lo: null, hi: v, currency: currency };
+    return { lo: v, hi: v, currency: currency };
+  }
+
+  /** "2–5 L INR", "45–55k EUR", "30+ L INR", "up to 5 L INR". Lakhs for INR, k otherwise. */
+  function formatSalaryBand(b) {
+    var top = Math.max(b.lo || 0, b.hi || 0);
+    var div = b.currency === "INR" ? 1e5 : top >= 1000 ? 1000 : 1;
+    var unit = b.currency === "INR" ? " L" : div === 1000 ? "k" : "";
+    var f = function (v) { return String(Math.round(v / div * 10) / 10); };
+    var body;
+    if (b.lo != null && b.hi != null) body = b.lo === b.hi ? f(b.lo) : f(b.lo) + "–" + f(b.hi);
+    else if (b.lo != null) body = f(b.lo) + "+";
+    else body = "up to " + f(b.hi);
+    return body + unit + (b.currency ? " " + b.currency : "");
+  }
+
+  var SALARY_Q = /\b(?:ctc|salary|compensation|remuneration|pay|package|wages?)\b|cost to (?:the )?company/i;
+  var CURRENT_Q = /\b(?:current|present|existing|last drawn|latest)\b/i;
+  var EXPECTED_Q = /\b(?:expected|expectations?|desired|expect|requirements?|looking for)\b/i;
+  var MONTHLY_Q = /\b(?:monthly|per month|a month|p\.?m\.?)\b/i;
+
+  /** Screening card text → [[question, answer], …]. A question ends in ":" or "?". */
+  function screeningPairs(text) {
+    var lines = String(text || "").split(/\n+/).map(function (l) { return l.replace(/\s+/g, " ").trim(); })
+      .filter(function (l) { return l && !/^(?:screening questions|see versions|last edit was made\b.*)$/i.test(l); });
+    var pairs = [], q = null, ans = [];
+    for (var i = 0; i < lines.length; i++) {
+      if (/[?:]$/.test(lines[i])) {
+        if (q) pairs.push([q, ans.join(" ")]);
+        q = lines[i]; ans = [];
+      } else if (q) ans.push(lines[i]);
+    }
+    if (q) pairs.push([q, ans.join(" ")]);
+    return pairs;
+  }
+
+  /**
+   * Note lines for the candidate's current and expected salary, from the screening
+   * answers: ["Current CTC: 2–5 L INR", "Expected CTC: 8–11 L INR"]. Bands are
+   * normalised (lakhs for INR, k otherwise). An answer that won't parse goes in
+   * as typed, so nothing the candidate said is lost.
+   */
+  function salaryNoteLines(screeningText) {
+    var found = { current: null, expected: null };
+    var pairs = screeningPairs(screeningText);
+    for (var i = 0; i < pairs.length; i++) {
+      var q = pairs[i][0], a = pairs[i][1];
+      if (!a || !SALARY_Q.test(q)) continue;
+      var isCur = CURRENT_Q.test(q), isExp = EXPECTED_Q.test(q);
+      var kind = isExp && !isCur ? "expected" : isCur && !isExp ? "current" : null;
+      if (!kind || found[kind]) continue;
+      var band = parseSalaryBand(a);
+      if (band && !band.currency) band.currency = detectCurrency(q);
+      found[kind] = {
+        label: (/\bctc\b|cost to/i.test(q) ? "CTC" : "salary") + (MONTHLY_Q.test(q) ? " (monthly)" : ""),
+        band: band, raw: a.length > 80 ? a.slice(0, 79) + "…" : a,
+      };
+    }
+    var lines = [];
+    ["current", "expected"].forEach(function (kind) {
+      var f = found[kind];
+      if (!f) return;
+      lines.push((kind === "current" ? "Current " : "Expected ") + f.label + ": " + (f.band ? formatSalaryBand(f.band) : f.raw));
+    });
+    return lines;
+  }
+
+  /**
+   * Screening answers live on their own tab (#st-screening) and aren't in the DOM
+   * while the Profile tab is open (live: screening 0 chars on every profile). Open
+   * it, wait until the salary answers render (≤ SCREENING_WAIT_MS), and return the
+   * card text. "" when the profile has no Screening tab (no extra wait then).
+   */
+  var SCREENING_WAIT_MS = 3000;
+  async function readScreeningTab(doc, win, log) {
+    var host = null;
+    try { host = doc.getElementById(SR.id.screening); } catch (_) {}
+    if (!host) host = findElementByIdDeep(doc.documentElement || doc.body, SR.id.screening);
+    if (!host) { log.push({ ok: true, msg: "Salary: no Screening tab" }); return ""; }
+    var target = host;
+    try {
+      if (!(host.matches && host.matches(SR.sel.screeningTabHost))) target = host.querySelector(SR.sel.screeningTabInner) || host;
+    } catch (_) {}
+    try { target.scrollIntoView({ block: "center", behavior: "instant" }); } catch (_) {}
+    await sleep(50);
+    try { target.click(); } catch (_) {}
+    var text = "", lastLen = -1, t0 = Date.now();
+    while (Date.now() - t0 < SCREENING_WAIT_MS) {
+      await sleep(200);
+      try { text = getScreeningText(doc, win); } catch (_) { text = ""; }
+      if (text && salaryNoteLines(text).length) break;
+      // Answers rendered but none is a salary question: stop once the text is stable.
+      if (text && text.length === lastLen) break;
+      lastLen = text ? text.length : -1;
+    }
+    log.push({ ok: true, msg: "Salary: Screening tab read (" + text.length + " chars, " + (Date.now() - t0) + " ms)" });
+    return text;
+  }
+
   /**
    * The headline under the candidate's name (current title and company): the
    * personal-info row first, then the candidate header blob.
@@ -905,6 +1055,9 @@
     getCandidateLocation: getCandidateLocation,
     pickCandidateHeadline: pickCandidateHeadline,
     getCandidateHeadline: getCandidateHeadline,
+    parseSalaryBand: parseSalaryBand,
+    salaryNoteLines: salaryNoteLines,
+    readScreeningTab: readScreeningTab,
     getPdfTextLayerText: getPdfTextLayerText,
     getProfileOverviewText: getProfileOverviewText,
     getFullPageText: getFullPageText,
