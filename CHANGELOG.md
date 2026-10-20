@@ -5,6 +5,18 @@ MAJOR for breaking changes to user workflow or stored data, MINOR for new featur
 
 The top `## [x.y.z]` heading must match `"version"` in `manifest.json` — `tests/release.test.js` enforces this.
 
+## [2.7.0] - 2026-10-20
+
+Keyword notes now show the candidate's current role and, for jobs outside the EU/EEA, their salary answers.
+
+### Added
+- **Current role in keyword notes.** A "Current: <title> at <company>" line sits under the candidate's name, taken from their profile headline. It's left out when there isn't one.
+- **Current and expected CTC in keyword notes.** For jobs whose Job Country is known and outside the EU/EEA, the note includes the candidate's salary answers from the Screening tab. EU/EEA jobs and jobs with no country set get no salary lines, in line with the EU Pay Transparency Directive.
+
+### Changed
+- **Clearer match line in keyword notes.** The count now says "Keywords match 2/5" or "Boolean match 2/5" depending on the search mode, instead of "Matched 2/5". A blank line separates it from the candidate details above.
+- **SmartRecruiters selectors in one place.** If SmartRecruiters changes its page layout, the fix is now in a single file.
+
 ## [2.6.0] - 2026-10-14
 
 Keyword notes are easier to read and say where the candidate is; runs stay out of your way and really use 3 tabs at 3×.
