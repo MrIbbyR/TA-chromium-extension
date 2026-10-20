@@ -396,8 +396,8 @@ describe('formatNoteText', () => {
     assert.strictEqual(
       out,
       'Mrinmayi Verma | https://jobs.smartrecruiters.com/abc\n' +
-      'Location: Chennai, India (verified)\n' +
-      'Matched 3/13:\n\n' +
+      'Location: Chennai, India (verified)\n\n' +
+      'Keywords match 3/13:\n\n' +
       'Keras (x2)\n' +
       'Chennai\n' +
       'NLP'
@@ -405,41 +405,45 @@ describe('formatNoteText', () => {
   });
   it('omits the location line when no location was found', () => {
     const out = formatNoteText(['Python', 'AWS'], 2, 5, '', 'Jane Smith', 'https://example.com/x');
-    assert.strictEqual(out, 'Jane Smith | https://example.com/x\nMatched 2/5:\n\nPython\nAWS');
+    assert.strictEqual(out, 'Jane Smith | https://example.com/x\nKeywords match 2/5:\n\nPython\nAWS');
   });
   it('honours an existing note prefix on the match-count line', () => {
     const out = formatNoteText(['Python'], 1, 1, 'Boolean: ', 'Jane Smith', 'https://example.com/x');
-    assert.strictEqual(out, 'Jane Smith | https://example.com/x\nBoolean: Matched 1/1:\n\nPython');
+    assert.strictEqual(out, 'Jane Smith | https://example.com/x\nBoolean: Keywords match 1/1:\n\nPython');
   });
   it('uses name alone when URL is missing', () => {
     const out = formatNoteText(['Go'], 1, 2, '', 'John Doe', '');
-    assert.strictEqual(out, 'John Doe\nMatched 1/2:\n\nGo');
+    assert.strictEqual(out, 'John Doe\nKeywords match 1/2:\n\nGo');
   });
   it('uses URL alone when name is missing', () => {
     const out = formatNoteText(['Go'], 1, 2, '', '', 'https://example.com/y');
-    assert.strictEqual(out, 'https://example.com/y\nMatched 1/2:\n\nGo');
+    assert.strictEqual(out, 'https://example.com/y\nKeywords match 1/2:\n\nGo');
   });
   it('falls back to the bare list when name, URL and location are all absent', () => {
     const out = formatNoteText(['Go', 'Rust'], 2, 4, '');
-    assert.strictEqual(out, 'Matched 2/4:\n\nGo\nRust');
+    assert.strictEqual(out, 'Keywords match 2/4:\n\nGo\nRust');
   });
   it('writes a single "No keyword tagged" line (after the location) on zero hits', () => {
     const out = formatNoteText([], 0, 5, '', 'Jane Smith', 'https://x.test/a', false, 'Pune, India');
     assert.strictEqual(
       out,
-      'Jane Smith | https://x.test/a\nLocation: Pune, India\nNo keyword tagged - Matched 0/5'
+      'Jane Smith | https://x.test/a\nLocation: Pune, India\n\nNo keyword tagged - Keywords match 0/5'
     );
   });
   it('keeps the prefix on a zero-hit summary (boolean FAIL)', () => {
     const out = formatNoteText([], 0, 3, '[FAIL] ', '', '');
-    assert.strictEqual(out, '[FAIL] No keyword tagged - Matched 0/3');
+    assert.strictEqual(out, '[FAIL] No keyword tagged - Keywords match 0/3');
   });
   it('appends the partial-scan warning last when the resume PDF was not read', () => {
     const out = formatNoteText(['phd'], 1, 5, '', 'Jane', 'https://x.test/a', true);
     assert.strictEqual(
       out,
-      'Jane | https://x.test/a\nMatched 1/5:\n\nPhD\n⚠ Resume PDF not read — partial scan (profile data only)'
+      'Jane | https://x.test/a\nKeywords match 1/5:\n\nPhD\n⚠ Resume PDF not read — partial scan (profile data only)'
     );
+  });
+  it('says "Boolean match" for a boolean scan', () => {
+    const out = formatNoteText(['python'], 1, 1, '[PASS] ', 'Jane', 'https://x.test/a', false, 'Pune, India', '', [], 'boolean');
+    assert.strictEqual(out, 'Jane | https://x.test/a\nLocation: Pune, India\n\n[PASS] Boolean match 1/1:\n\nPython');
   });
   it('omits the warning when the scan was complete', () => {
     const out = formatNoteText(['phd'], 1, 5, '', 'Jane', 'https://x.test/a', false);
@@ -454,11 +458,11 @@ describe('current role line', () => {
       'Data Annotator at Samsung R&D Institute India');
     assert.strictEqual(out,
       'Jane | https://x.test/a\nCurrent: Data Annotator at Samsung R&D Institute India\n' +
-      'Location: Chennai, India (verified)\nMatched 1/5:\n\nNLP');
+      'Location: Chennai, India (verified)\n\nKeywords match 1/5:\n\nNLP');
   });
   it('escapes the role in the rich-text note', () => {
     const out = formatNoteHtml([], 0, 2, '', 'Jane', 'https://x.test/a', false, '', 'Engineer at R&D <Lab>');
-    assert.ok(out.includes('<br>Current: Engineer at R&amp;D &lt;Lab&gt;<br>No keyword tagged'));
+    assert.ok(out.includes('<br>Current: Engineer at R&amp;D &lt;Lab&gt;<br><br>No keyword tagged'));
   });
   it('picks the "<title> at <company>" line, skipping location, phone and name', () => {
     assert.strictEqual(
@@ -512,7 +516,7 @@ describe('salary lines from screening answers', () => {
       ['Current CTC: 2–5 L INR', 'Expected CTC: 8–11 L INR']);
     assert.strictEqual(out,
       'Jane | https://x.test/a\nCurrent: SRE at Acme\nLocation: Pune, India\n' +
-      'Current CTC: 2–5 L INR\nExpected CTC: 8–11 L INR\nMatched 1/2:\n\nAWS');
+      'Current CTC: 2–5 L INR\nExpected CTC: 8–11 L INR\n\nKeywords match 1/2:\n\nAWS');
   });
 });
 
@@ -625,14 +629,14 @@ describe('formatNoteHtml', () => {
     assert.strictEqual(
       out,
       'Jane Smith | <a href="https://jobs.smartrecruiters.com/abc">SR Profile</a>' +
-      '<br>Location: Chennai, India<br>Matched 2/5:<br><br>Python<br>AWS'
+      '<br>Location: Chennai, India<br><br>Keywords match 2/5:<br><br>Python<br>AWS'
     );
   });
   it('renders "No keyword tagged" with the hyperlink on zero hits', () => {
     const out = formatNoteHtml([], 0, 4, '', 'John Doe', 'https://x.test/p');
     assert.strictEqual(
       out,
-      'John Doe | <a href="https://x.test/p">SR Profile</a><br>No keyword tagged - Matched 0/4'
+      'John Doe | <a href="https://x.test/p">SR Profile</a><br>No keyword tagged - Keywords match 0/4'
     );
   });
   it('escapes HTML-special characters in the name, keywords and location', () => {
@@ -640,13 +644,13 @@ describe('formatNoteHtml', () => {
     assert.strictEqual(
       out,
       'A &amp; B &lt;x&gt; | <a href="https://x.test/q">SR Profile</a>' +
-      '<br>Location: R&amp;D &lt;City&gt;<br>Matched 1/1:<br><br>C&lt;b&gt;'
+      '<br>Location: R&amp;D &lt;City&gt;<br><br>Keywords match 1/1:<br><br>C&lt;b&gt;'
     );
   });
   it('appends the partial-scan warning (HTML, escaped) when set', () => {
     const out = formatNoteHtml(['phd'], 1, 5, '', 'Jane', 'https://x.test/a', true);
     assert.ok(out.includes('<br>⚠ Resume PDF not read'));
-    assert.ok(out.includes('Matched 1/5:<br><br>PhD'));
+    assert.ok(out.includes('Keywords match 1/5:<br><br>PhD'));
   });
 });
 
@@ -722,11 +726,11 @@ ${'pad '.repeat(120)}`;
 });
 
 describe('note-save confirmation — feed-appearance signal', () => {
-  it('marker is the normalised "matched N/T" count', () => {
-    assert.strictEqual(noteConfirmMarker(3, 13), 'matched 3/13');
+  it('marker is the normalised "match N/T" count', () => {
+    assert.strictEqual(noteConfirmMarker(3, 13), 'match 3/13');
   });
-  it('marker for zero hits is "matched 0/T"', () => {
-    assert.strictEqual(noteConfirmMarker(0, 5), 'matched 0/5');
+  it('marker for zero hits is "match 0/T"', () => {
+    assert.strictEqual(noteConfirmMarker(0, 5), 'match 0/5');
   });
   it('marker is found in every note format, including a prefixed FAIL line', () => {
     const list = formatNoteText(['nlp', 'keras'], 2, 5, 'Boolean: ', 'Jane', 'https://x', false, 'Pune');
@@ -741,11 +745,11 @@ describe('note-save confirmation — feed-appearance signal', () => {
   it('div editor: detects the note in the feed even though the compose box keeps its text', () => {
     const marker = noteConfirmMarker(2, 5);
     // <br>-separated lines run together in textContent
-    const composeText = 'Jane | SR ProfileLocation: PuneMatched 2/5:NLPPyTorch';
+    const composeText = 'Jane | SR ProfileLocation: PuneKeywords match 2/5:NLPPyTorch';
     // BEFORE post: only the compose box holds the text → feed delta 0
     assert.strictEqual(feedDeltaCount(composeText, composeText, marker), 0);
     // AFTER post: feed now also renders the note, compose box still holds its copy → delta 1
-    const sectionAfter = 'Jane — Location: Pune Matched 2/5: NLP PyTorch · 2m ago ' + composeText;
+    const sectionAfter = 'Jane — Location: Pune Keywords match 2/5: NLP PyTorch · 2m ago ' + composeText;
     assert.strictEqual(feedDeltaCount(sectionAfter, composeText, marker), 1);
   });
 
@@ -754,19 +758,19 @@ describe('note-save confirmation — feed-appearance signal', () => {
     const marker = noteConfirmMarker(1, 3);
     // textarea.textContent is empty (its value is not reflected in textContent)
     assert.strictEqual(feedDeltaCount('', '', marker), 0);
-    assert.strictEqual(feedDeltaCount('Jane — Matched 1/3: Azure · now', '', marker), 1);
+    assert.strictEqual(feedDeltaCount('Jane — Keywords match 1/3: Azure · now', '', marker), 1);
   });
 
   it('does not false-confirm when nothing new rendered', () => {
     const marker = noteConfirmMarker(1, 2);
-    assert.strictEqual(feedDeltaCount('unrelated feed content here', 'Matched 1/2: Kubernetes', marker), 0);
+    assert.strictEqual(feedDeltaCount('unrelated feed content here', 'Keywords match 1/2: Kubernetes', marker), 0);
   });
 
   it('an older note with the same count is in the baseline, so only a new copy confirms', () => {
     const marker = noteConfirmMarker(1, 2);
-    const before = 'Jane — Matched 1/2: Go · 3d ago';
+    const before = 'Jane — Keywords match 1/2: Go · 3d ago';
     assert.strictEqual(feedDeltaCount(before, '', marker), 1);
-    assert.strictEqual(feedDeltaCount('Jane — Matched 1/2: Go · now ' + before, '', marker), 2);
+    assert.strictEqual(feedDeltaCount('Jane — Keywords match 1/2: Go · now ' + before, '', marker), 2);
   });
 });
 

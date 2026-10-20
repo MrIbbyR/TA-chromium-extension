@@ -317,17 +317,19 @@
   /**
    * Note body as lines, read top to bottom: current role ("Current: Data
    * Annotator at Samsung…", the headline under the name), location, current and
-   * expected salary from the screening answers (salaryLines), then the match
-   * count, then one line per matched keyword, capitalised (a comma-joined row was
-   * hard to scan), with a blank line between the count and the list. Zero hits
-   * stays a single "No keyword tagged - Matched 0/N" line.
+   * expected salary from the screening answers (salaryLines), a blank line, then
+   * the match count ("Keywords match N/T" or "Boolean match N/T", by `mode`), then
+   * one line per matched keyword, capitalised (a comma-joined row was hard to
+   * scan), with a blank line between the count and the list. Zero hits stays a
+   * single "No keyword tagged - Keywords match 0/N" line.
    */
-  function noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline, salaryLines) {
+  function noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline, salaryLines, mode) {
     var lines = [];
     if (headline) lines.push("Current: " + headline);
     if (location) lines.push("Location: " + location);
     if (salaryLines) lines.push.apply(lines, salaryLines);
-    var matched = "Matched " + hitCount + "/" + totalKeywords;
+    if (lines.length) lines.push(""); // blank line between the profile details and the match count
+    var matched = matchLabel(mode) + " " + hitCount + "/" + totalKeywords;
     if (hitCount === 0 || !hitLabels || !hitLabels.length) {
       lines.push((notePrefix || "") + "No keyword tagged - " + matched);
     } else {
@@ -339,8 +341,13 @@
     return lines;
   }
 
-  function formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline, salaryLines) {
-    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline, salaryLines);
+  /** "Boolean match" for a boolean-query scan, otherwise "Keywords match". */
+  function matchLabel(mode) {
+    return mode === "boolean" ? "Boolean match" : "Keywords match";
+  }
+
+  function formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline, salaryLines, mode) {
+    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline, salaryLines, mode);
     // SR notes are plain-text, so name + URL go in as a plain header line (no markup).
     var header = [candidateName, profileUrl].filter(function (p) { return p; }).join(" | ");
     if (header) lines.unshift(header);
@@ -357,8 +364,8 @@
    * hyperlink instead of a bare URL. Used ONLY when the notes field is a
    * contenteditable rich editor — a plain <textarea> cannot hold an anchor.
    */
-  function formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline, salaryLines) {
-    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline, salaryLines).map(escapeHtml);
+  function formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline, salaryLines, mode) {
+    var lines = noteBodyLines(hitLabels, hitCount, totalKeywords, notePrefix, partialScan, location, headline, salaryLines, mode).map(escapeHtml);
     var parts = [];
     if (candidateName) parts.push(escapeHtml(candidateName));
     if (profileUrl) parts.push('<a href="' + escapeHtml(profileUrl) + '">SR Profile</a>');
@@ -381,7 +388,8 @@
   }
 
   /**
-   * Render-stable marker for a just-composed note: its "matched N/T" count.
+   * Render-stable marker for a just-composed note: its "match N/T" count
+   * (a substring of both "Keywords match N/T" and "Boolean match N/T").
    * The note is now one keyword per line, and the feed may render those lines
    * as separate elements whose textContent runs together ("• nlp• keras"), so
    * the keyword list itself is no longer a reliable substring. The count sits
@@ -391,7 +399,7 @@
    * substring or the compose field clearing, this fires for SR's div editor.
    */
   function noteConfirmMarker(hitCount, totalKeywords) {
-    return _normNoteText("Matched " + (hitCount || 0) + "/" + totalKeywords);
+    return _normNoteText("match " + (hitCount || 0) + "/" + totalKeywords);
   }
 
   /**
@@ -763,7 +771,9 @@
       // Count only — salary figures are candidate data and stay out of the log.
       log.push({ ok: true, msg: "Notes: salary lines " + salaryLines.length });
     } catch (_) {}
-    var noteText = formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline, salaryLines);
+    var mode = opts && opts.mode;
+    var noteText = formatNoteText(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline, salaryLines, mode);
+    var noteMarker = noteConfirmMarker(hitCount, totalKeywords);
     var itag = (input.tagName || "").toLowerCase();
     var isRichEditor = (itag !== "textarea" && itag !== "input");
 
@@ -786,7 +796,7 @@
         input.focus();
         var rsel = ownerWin.getSelection && ownerWin.getSelection();
         if (rsel && rsel.selectAllChildren) rsel.selectAllChildren(input);
-        var noteHtml = formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline, salaryLines);
+        var noteHtml = formatNoteHtml(hitLabels, hitCount, totalKeywords, notePrefix, candidateName, profileUrl, partialScan, location, headline, salaryLines, mode);
         usedRichHtml = ownerDoc.execCommand("insertHTML", false, noteHtml);
       } catch (_) {}
       if (usedRichHtml) {
@@ -804,7 +814,7 @@
     if (itag === "textarea" || itag === "input") {
       var curVal = "";
       try { curVal = input.value || ""; } catch (_) {}
-      if (curVal.indexOf("Matched") < 0) {
+      if (_normNoteText(curVal).indexOf(noteMarker) < 0) {
         log.push({ ok: true, msg: "Notes: native setter did not register — trying execCommand" });
         // Strategy 2: execCommand insertText — browser-native, triggers Angular/React bindings
         var inserted = false;
@@ -836,7 +846,7 @@
     try {
       finalInputVal = (itag === "textarea" || itag === "input") ? (input.value || "") : (input.textContent || "");
     } catch (_) {}
-    if (!finalInputVal || finalInputVal.indexOf("Matched") < 0) {
+    if (!finalInputVal || _normNoteText(finalInputVal).indexOf(noteMarker) < 0) {
       log.push({ ok: false, msg: "Notes: value not confirmed in textarea before clicking Post (val='" + String(finalInputVal).slice(0, 40) + "')" });
     } else {
       log.push({ ok: true, msg: "Notes: value confirmed in textarea — clicking Post" });
@@ -876,7 +886,6 @@
     // The matched-keyword body is profile-specific; record how many copies of it
     // already render in the feed (excluding the compose box) BEFORE we post, so an
     // increase afterwards proves a new note element appeared.
-    var noteMarker = noteConfirmMarker(hitCount, totalKeywords);
     var baselineFeed = feedCopiesOfNote(doc, win, noteMarker, input);
 
     // Click Post exactly once — never retry. Retrying risks posting blank notes when SR

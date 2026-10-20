@@ -735,7 +735,7 @@
       phase.mark("notesPrepare");
       var boolPrefix = booleanPass ? "[PASS] " : "[FAIL] ";
       try {
-        notesPosted = await postKeywordHitsToNotes(doc, win, allHitLabels, allHitLabels.length, totalTerms, log, boolPrefix, { partialScan: !resumeWasRead(resumeText, resumeIsChromeBool), resumeText: resumeWasRead(resumeText, resumeIsChromeBool) ? resumeText : "", screeningText: config.salaryNotes ? screeningText : "" });
+        notesPosted = await postKeywordHitsToNotes(doc, win, allHitLabels, allHitLabels.length, totalTerms, log, boolPrefix, { mode: "boolean", partialScan: !resumeWasRead(resumeText, resumeIsChromeBool), resumeText: resumeWasRead(resumeText, resumeIsChromeBool) ? resumeText : "", screeningText: config.salaryNotes ? screeningText : "" });
       } catch (e) {
         log.push({ ok: false, msg: "Notes post error: " + ((e && e.message) || String(e)) });
       }

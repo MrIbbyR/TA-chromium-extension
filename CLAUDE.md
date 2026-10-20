@@ -160,19 +160,20 @@ Current: Engineer at Acme              ← headline under the name ("<title> at 
 Location: Tallinn, Estonia (verified)   ← see Candidate Location below
 Current CTC: 2–5 L INR                  ← salary screening answers (salaryNoteLines); omitted if none
 Expected CTC: 8–11 L INR
-Matched 2/17:                           ← boolean prefix ("Boolean: ", "[FAIL] ") goes here
+                                        ← blank line (only when a line sits above)
+Keywords match 2/17:                    ← "Boolean match" for boolean runs; "[PASS] "/"[FAIL] " prefix goes here
                                         ← blank line (only when there are hits)
 Scrapy (x3)                             ← one keyword per line, no bullets
 WAF (x2)
 ⚠ Resume PDF not read — partial scan …  ← only when the resume never rendered
 ```
 
-- Zero hits is one line: `No keyword tagged - Matched 0/N`.
+- Zero hits is one line: `No keyword tagged - Keywords match 0/N`.
 - **Salary lines are gated by job country.** At run start the popup calls `__srReadJobCountry` (`readJobCountry` in `keyword-pipeline.js`) on the job page: Job details tab → "Job Country" field → back to Applicants. Only a known, non-EU/EEA country sets `config.salaryNotes` (EU Pay Transparency Directive: no pay-history questions); unknown → off. Then the core opens the Screening tab (`readScreeningTab`) — the answers aren't in the DOM on the Profile tab.
 - `displayKeywordLabel()` capitalises keywords **for the note only** (results, diagnostics and the popup keep the matched text): a keyword typed with capitals keeps its spelling; known terms use `KEYWORD_DISPLAY_CASE` (WAF, AWS, PhD, PyTorch, FMCG…, add to it); otherwise each word is capitalised, small words ("and", "of") stay lowercase.
 - Two insert paths: a contenteditable rich editor gets `formatNoteHtml` via `execCommand("insertHTML")` so "SR Profile" is a real `<a>`; a `<textarea>` gets `formatNoteText` (plain, bare URL). **The SR Profile link is a hard requirement** — don't switch the rich editor to plain text to fix layout.
-- Save confirmation (`noteConfirmMarker`) looks for the `matched N/T` text appearing in the notes feed (before vs after Post, via `feedDeltaCount`) — not the keyword list, whose lines may run together in the feed's textContent.
-- **Compact lines (CKEditor):** the notes editor is CKEditor 4 (inline, `cke_editable`; Enter = `<p>`, Shift+Enter = `<br>`). Its writer emits `<br />\n`, and SR turns each `\n` into a second `<br>` — that, not our HTML, double-spaced every line (verified live: a single `<br>` per line in the editor became `br,br` in the saved note). Before inserting, the core sends `srCompactNoteBreaks`; the background runs `compactNoteBreaksInPage` in the page's **MAIN** world (`window.CKEDITOR` is invisible to the isolated content script) to `setRules('br', { breakAfterOpen: false, breakAfterClose: false })` on every instance, in the sender's frame. A miss is logged (`could not compact line breaks`) and the note still posts. Keep one `<br>` per line; the only empty line is the one after `Matched N/T:`, and it renders as a single blank line now that breaks aren't doubled.
+- Save confirmation (`noteConfirmMarker`) looks for the `match N/T` text appearing in the notes feed (before vs after Post, via `feedDeltaCount`) — not the keyword list, whose lines may run together in the feed's textContent.
+- **Compact lines (CKEditor):** the notes editor is CKEditor 4 (inline, `cke_editable`; Enter = `<p>`, Shift+Enter = `<br>`). Its writer emits `<br />\n`, and SR turns each `\n` into a second `<br>` — that, not our HTML, double-spaced every line (verified live: a single `<br>` per line in the editor became `br,br` in the saved note). Before inserting, the core sends `srCompactNoteBreaks`; the background runs `compactNoteBreaksInPage` in the page's **MAIN** world (`window.CKEDITOR` is invisible to the isolated content script) to `setRules('br', { breakAfterOpen: false, breakAfterClose: false })` on every instance, in the sender's frame. A miss is logged (`could not compact line breaks`) and the note still posts. Keep one `<br>` per line; the only empty lines are the ones before and after `Keywords match N/T:`, and they render as a single blank line now that breaks aren't doubled.
 
 ### Candidate Location in Keyword Notes (`location-infer.js` + `location-gazetteer.js`)
 
