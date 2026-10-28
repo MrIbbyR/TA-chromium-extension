@@ -158,7 +158,7 @@ Each scanned profile gets a "Note to self", built by `noteBodyLines()` and read 
 Ranel Tartu | SR Profile                ← name | link (must stay a working link)
 Current: Engineer at Acme              ← headline under the name ("<title> at <company>"); omitted if none
 Location: Tallinn, Estonia (verified)   ← see Candidate Location below
-Current CTC: 2–5 L INR                  ← salary screening answers (salaryNoteLines); omitted if none
+Current CTC: 2–5 L INR                  ← salary screening answers (salaryNoteLines): INR in lakhs, others verbatim; omitted if none
 Expected CTC: 8–11 L INR
                                         ← blank line (only when a line sits above)
 Keywords match 2/17:                    ← "Boolean match" for boolean runs; "[PASS] "/"[FAIL] " prefix goes here

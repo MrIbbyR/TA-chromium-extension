@@ -480,36 +480,41 @@ describe('salary lines from screening answers', () => {
   const { salaryNoteLines, parseSalaryBand } = require('../keyword-extract.js');
   const INDIA = 'Screening Questions\nPlease enter your Annual Current CTC in INR:\n2,00,000 to 5,00,000 INR\n\n' +
     'Please enter your Annual Expected CTC in INR:\n8,00,000 to 11,00,000 INR';
-  it('normalises Indian bands to lakhs', () => {
+  it('India: rupee answers keep the lakh shorthand', () => {
     assert.deepEqual(salaryNoteLines(INDIA), ['Current CTC: 2–5 L INR', 'Expected CTC: 8–11 L INR']);
-  });
-  it('exact figures stay exact', () => {
     assert.deepEqual(salaryNoteLines('Current CTC:\n12 LPA\nExpected CTC:\n15 LPA'),
       ['Current CTC: 12 L INR', 'Expected CTC: 15 L INR']);
   });
-  it('non-INR uses k and the question wording ("salary")', () => {
+  it('India: lakh bands parse open ends and units', () => {
+    assert.deepEqual(parseSalaryBand('8 to 11 LPA'), { lo: 800000, hi: 1100000, currency: 'INR' });
+    assert.deepEqual(parseSalaryBand('Above 30,00,000 INR'), { lo: 3000000, hi: null, currency: 'INR' });
+    assert.deepEqual(parseSalaryBand('Up to 5 LPA'), { lo: null, hi: 500000, currency: 'INR' });
+    assert.equal(parseSalaryBand('n/a'), null);
+  });
+  it('elsewhere: never rounds or converts a figure', () => {
+    assert.deepEqual(salaryNoteLines('What are your salary expectations?\n27000'), ['Expected salary: 27000']);
     assert.deepEqual(
       salaryNoteLines('What is your current gross annual salary?\n€45,000\nWhat are your salary expectations?\n50k - 55k EUR'),
-      ['Current salary: 45k EUR', 'Expected salary: 50–55k EUR']);
+      ['Current salary: €45,000', 'Expected salary: 50k - 55k EUR']);
+  });
+  it('reads a prompt without "?" (Israel)', () => {
+    assert.deepEqual(
+      salaryNoteLines('Screening Questions\nPlease, specify your salary expectations in the currency of the country you\'re applying for (gross per year)\n' +
+        '410000 shekels\nAre you willing to relocate if you are in a different location than where the role is located?\nYes'),
+      ['Expected salary: 410000 shekels']);
+    assert.deepEqual(salaryNoteLines('What is your current salary? (gross per year)\n₪ 350,000'), ['Current salary: ₪ 350,000']);
   });
   it('marks a monthly figure', () => {
     assert.deepEqual(
       salaryNoteLines('Current monthly salary in USD?\n4,500\nExpected annual salary in USD?\n70000'),
-      ['Current salary (monthly): 4.5k USD', 'Expected salary: 70k USD']);
+      ['Current salary (monthly): 4,500', 'Expected salary: 70000']);
   });
-  it('keeps an unparseable answer as typed', () => {
+  it('keeps a non-numeric answer', () => {
     assert.deepEqual(salaryNoteLines('Expected CTC?\nNegotiable'), ['Expected CTC: Negotiable']);
   });
   it('ignores non-salary questions and empty text', () => {
     assert.deepEqual(salaryNoteLines('Notice period in days?\n30\nAre you willing to relocate?\nYes'), []);
     assert.deepEqual(salaryNoteLines(''), []);
-  });
-  it('parses open bands, units and currencies', () => {
-    assert.deepEqual(parseSalaryBand('8 to 11 LPA'), { lo: 800000, hi: 1100000, currency: 'INR' });
-    assert.deepEqual(parseSalaryBand('Above 30,00,000 INR'), { lo: 3000000, hi: null, currency: 'INR' });
-    assert.deepEqual(parseSalaryBand('Up to 5 LPA'), { lo: null, hi: 500000, currency: 'INR' });
-    assert.deepEqual(parseSalaryBand('$120,000 - $140,000'), { lo: 120000, hi: 140000, currency: 'USD' });
-    assert.equal(parseSalaryBand('n/a'), null);
   });
   it('salary lines sit after the location, before the match count', () => {
     const out = formatNoteText(['aws'], 1, 2, '', 'Jane', 'https://x.test/a', false, 'Pune, India', 'SRE at Acme',

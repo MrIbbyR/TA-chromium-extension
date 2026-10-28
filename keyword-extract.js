@@ -629,17 +629,14 @@
     return { lo: v, hi: v, currency: currency };
   }
 
-  /** "2–5 L INR", "45–55k EUR", "30+ L INR", "up to 5 L INR". Lakhs for INR, k otherwise. */
-  function formatSalaryBand(b) {
-    var top = Math.max(b.lo || 0, b.hi || 0);
-    var div = b.currency === "INR" ? 1e5 : top >= 1000 ? 1000 : 1;
-    var unit = b.currency === "INR" ? " L" : div === 1000 ? "k" : "";
-    var f = function (v) { return String(Math.round(v / div * 10) / 10); };
+  /** India only: "2–5 L INR", "30+ L INR", "up to 5 L INR". */
+  function formatLakhBand(b) {
+    var f = function (v) { return String(Math.round(v / 1e5 * 10) / 10); };
     var body;
     if (b.lo != null && b.hi != null) body = b.lo === b.hi ? f(b.lo) : f(b.lo) + "–" + f(b.hi);
     else if (b.lo != null) body = f(b.lo) + "+";
     else body = "up to " + f(b.hi);
-    return body + unit + (b.currency ? " " + b.currency : "");
+    return body + " L INR";
   }
 
   var SALARY_Q = /\b(?:ctc|salary|compensation|remuneration|pay|package|wages?)\b|cost to (?:the )?company/i;
@@ -647,13 +644,25 @@
   var EXPECTED_Q = /\b(?:expected|expectations?|desired|expect|requirements?|looking for)\b/i;
   var MONTHLY_Q = /\b(?:monthly|per month|a month|p\.?m\.?)\b/i;
 
-  /** Screening card text → [[question, answer], …]. A question ends in ":" or "?". */
+  // A prompt that doesn't end in "?"/":" — "Please, specify your salary expectations
+  // in the currency of the country you're applying for (gross per year)" (Israel).
+  var PROMPT_START = /^(?:please|kindly|what|how|which|specify|enter|provide|state|mention|share|indicate)\b/i;
+
+  /**
+   * Screening card text → [[question, answer], …]. A question ends in ":" or "?"
+   * (a trailing "(…)" aside), or is a long line opening like a prompt.
+   */
+  function isScreeningQuestion(line) {
+    if (/[?:]$/.test(line.replace(/(?:\s*\([^()]*\))+$/, ""))) return true;
+    return line.length >= 25 && PROMPT_START.test(line);
+  }
+
   function screeningPairs(text) {
     var lines = String(text || "").split(/\n+/).map(function (l) { return l.replace(/\s+/g, " ").trim(); })
       .filter(function (l) { return l && !/^(?:screening questions|see versions|last edit was made\b.*)$/i.test(l); });
     var pairs = [], q = null, ans = [];
     for (var i = 0; i < lines.length; i++) {
-      if (/[?:]$/.test(lines[i])) {
+      if (isScreeningQuestion(lines[i])) {
         if (q) pairs.push([q, ans.join(" ")]);
         q = lines[i]; ans = [];
       } else if (q) ans.push(lines[i]);
@@ -664,10 +673,11 @@
 
   /**
    * Note lines for the candidate's current and expected salary, from the screening
-   * answers: ["Current CTC: 2–5 L INR", "Expected CTC: 8–11 L INR"]. Bands are
-   * normalised (lakhs for INR, k otherwise). An answer that won't parse goes in
-   * as typed, so nothing the candidate said is lost.
+   * answers. Rupee answers keep the lakh shorthand recruiters in India use
+   * ("Current CTC: 2–5 L INR"); every other answer goes in exactly as the candidate
+   * typed it ("Expected salary: 27000"), so there's no doubt about what they said.
    */
+  var SALARY_ANSWER_MAX = 200;
   function salaryNoteLines(screeningText) {
     var found = { current: null, expected: null };
     var pairs = screeningPairs(screeningText);
@@ -681,14 +691,15 @@
       if (band && !band.currency) band.currency = detectCurrency(q);
       found[kind] = {
         label: (/\bctc\b|cost to/i.test(q) ? "CTC" : "salary") + (MONTHLY_Q.test(q) ? " (monthly)" : ""),
-        band: band, raw: a.length > 80 ? a.slice(0, 79) + "…" : a,
+        answer: band && band.currency === "INR" ? formatLakhBand(band)
+          : a.length > SALARY_ANSWER_MAX ? a.slice(0, SALARY_ANSWER_MAX - 1) + "…" : a,
       };
     }
     var lines = [];
     ["current", "expected"].forEach(function (kind) {
       var f = found[kind];
       if (!f) return;
-      lines.push((kind === "current" ? "Current " : "Expected ") + f.label + ": " + (f.band ? formatSalaryBand(f.band) : f.raw));
+      lines.push((kind === "current" ? "Current " : "Expected ") + f.label + ": " + f.answer);
     });
     return lines;
   }
@@ -1055,8 +1066,8 @@
     getCandidateLocation: getCandidateLocation,
     pickCandidateHeadline: pickCandidateHeadline,
     getCandidateHeadline: getCandidateHeadline,
-    parseSalaryBand: parseSalaryBand,
     salaryNoteLines: salaryNoteLines,
+    parseSalaryBand: parseSalaryBand,
     readScreeningTab: readScreeningTab,
     getPdfTextLayerText: getPdfTextLayerText,
     getProfileOverviewText: getProfileOverviewText,
