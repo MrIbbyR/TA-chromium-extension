@@ -28,6 +28,7 @@ function createBrowser(opts = {}) {
   const alarms = new Map();        // name -> { name, scheduledTime, periodInMinutes, seq }
   const timers = [];               // { id, at, owner, fn }
   const notifications = [];
+  const broadcasts = [];           // runtime.sendMessage from the SW (e.g. srRunFinished)
   const pageLog = [];              // { tabId, url, what, at } recorded by page scripts
   const events = [];               // trace, handy when a test fails
   let nextTabId = 100;
@@ -153,6 +154,11 @@ function createBrowser(opts = {}) {
       onMessage: makeEvent(listeners.message),
       onInstalled: makeEvent(listeners.installed),
       onStartup: makeEvent(listeners.startup),
+      // Messages the SW sends to extension pages (the popup): recorded, nobody listening.
+      sendMessage(message) {
+        broadcasts.push(clone(message));
+        return Promise.resolve(undefined);
+      },
       // chrome.runtime.reload(): the extension restarts — a fresh SW, storage.session cleared.
       reload() {
         events.push(['ext-reload', clock.now]);
@@ -423,12 +429,14 @@ function createBrowser(opts = {}) {
   ensureSW(); // extension installed / browser started
 
   return {
-    clock, store, tabs, notifications, pageLog, events,
+    clock, store, tabs, notifications, broadcasts, pageLog, events,
     advance, runUntil, killSW, bootSW,
     get swAlive() { return !!sw; },
     sendFromPopup: (message) => sendToSW(message, {}),
     // A keyboard shortcut from manifest "commands" (fires commands.onCommand).
     fireCommand: (name) => fireSW('command', [name]),
+    // The extension installed or updated (fires runtime.onInstalled).
+    fireInstalled: (reason = 'update') => fireSW('installed', [{ reason }]),
     // The recruiter closing a tab by hand (fires tabs.onRemoved, waking the SW if needed).
     // In-page route change (pushState): the URL changes but the page — and its content
     // script — keeps running.

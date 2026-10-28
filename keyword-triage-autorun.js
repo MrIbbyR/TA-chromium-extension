@@ -140,17 +140,7 @@
       }
     } catch (_) {}
     await __srSessionRemove(KEY);                                              // P0-2: was sessionStorage.removeItem
-    try {
-      if (chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({
-          keywordTriageLastRun: {
-            finishedAt: Date.now(),
-            log: state.log || [],
-            results: state.results || [],
-          },
-        });
-      }
-    } catch (_) {}
+    // GDPR: per-profile results and logs are not saved after the run.
     try {
       if (chrome.runtime && chrome.runtime.sendMessage) {
         chrome.runtime.sendMessage({ type: "srCloseExtraProfileTabs" }, function () {

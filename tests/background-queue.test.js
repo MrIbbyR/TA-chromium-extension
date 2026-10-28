@@ -35,7 +35,14 @@ function setup({ n, workers = 2, feature = 'keyword', behaviour = normal(5 * SEC
     ...(profilesPerMinute != null ? { profilesPerMinute } : {}),
   });
   const lastRunKey = feature === 'salary' ? 'salaryTriageLastRun' : 'keywordTriageLastRun';
-  const lastRun = () => browser.store.local[lastRunKey];
+  // The saved last run holds totals only; per-profile results reach the popup in the
+  // srRunFinished message. Rejoin them so tests can check each URL's result.
+  const lastRun = () => {
+    const saved = browser.store.local[lastRunKey];
+    if (!saved) return saved;
+    const msg = browser.broadcasts.filter((m) => m.type === 'srRunFinished' && m.feature === feature).at(-1);
+    return { ...saved, results: msg ? msg.results : [] };
+  };
   const finished = () => !!lastRun();
   const workerTabs = () => [...browser.tabs.values()].filter((t) => /\/profile\/c\d+$/.test(t.url));
   const tabFor = (u) => [...browser.tabs.values()].find((t) => t.url === u);
@@ -102,17 +109,41 @@ describe('background parallel queue: happy path', () => {
     assert.equal(ctx.browser.store.session.srParallelQueue, undefined, 'queue must be cleared after the run');
   });
 
-  it('a finished run trims per-profile diagnostics to the newest 20 (GDPR cap)', async () => {
-    // Worker tabs closed right after their last profile can die before their own trim.
-    const diags = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`lastRunDiag_${1000 + i}`, { timestamp: 1000 + i }]));
-    const ctx = setup({ n: 2, initialLocal: { ...diags, keepMe: 1 } });
+  it('saves no candidate data: the last run holds totals and durations only (GDPR)', async () => {
+    const ctx = setup({ n: 3 });
     await ctx.start();
     assert.ok(await ctx.browser.runUntil(ctx.finished, 10 * MIN), 'run did not finish');
     await ctx.browser.advance(1 * SEC);
-    const left = Object.keys(ctx.browser.store.local).filter((k) => k.startsWith('lastRunDiag_')).sort();
-    assert.equal(left.length, 20);
-    assert.equal(left[0], 'lastRunDiag_1005', 'the oldest entries go first');
-    assert.equal(ctx.browser.store.local.keepMe, 1, 'other settings are untouched');
+    const saved = ctx.browser.store.local.keywordTriageLastRun;
+    assert.deepEqual(Object.keys(saved).sort(), ['finishedAt', 'parallel', 'stoppedReason', 'timings', 'total', 'totals']);
+    assert.equal(saved.totals.processed, 3);
+    assert.equal(saved.totals.matched, 3);
+    for (const t of saved.timings) {
+      for (const v of Object.values(t)) assert.equal(typeof v, 'number', 'timings must be numbers only');
+    }
+    const local = JSON.stringify(ctx.browser.store.local);
+    for (const u of ctx.urls) assert.ok(!local.includes(u), `profile URL ${u} must not be stored`);
+    assert.ok(!/matchedKeywords|hitCount|url/i.test(JSON.stringify(saved)), 'no per-profile fields in the last run');
+    // The popup gets the per-profile results in memory.
+    const msg = ctx.browser.broadcasts.find((m) => m.type === 'srRunFinished');
+    assert.equal(msg.results.length, 3);
+  });
+
+  it('install/update deletes candidate data saved by older versions', async () => {
+    const ctx = setup({
+      n: 1,
+      initialLocal: {
+        lastRunDiag_1000: { profileUrl: url(1) }, lastRunDiag_1001: { profileUrl: url(2) },
+        srDiagRawCapture: true,
+        keywordTriageLastRun: { finishedAt: 1, results: [{ url: url(1) }] },
+        salaryTriageLastRun: { finishedAt: 1, totals: { processed: 2 } },
+        kwTriageKeywords: 'python',
+      },
+    });
+    ctx.browser.fireInstalled();
+    await ctx.browser.advance(1 * SEC);
+    assert.deepEqual(Object.keys(ctx.browser.store.local).sort(), ['kwTriageKeywords', 'salaryTriageLastRun'],
+      'old diagnostics, the raw-text switch and per-profile last runs go; settings and totals stay');
   });
 
   it('removes queue keys left in chrome.storage.local by older versions', async () => {

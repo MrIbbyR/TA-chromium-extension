@@ -39,8 +39,7 @@
     "prepareNotesSection", "postKeywordHitsToNotes"
   ]);
   var diagMod = need("keyword-diag.js", [
-    "DIAG_KEY_PREFIX", "DIAG_MAX_ENTRIES", "DIAG_TEXT_CAP", "DIAG_SOURCE_CAP", "capText",
-    "getDiagRawCapture", "sanitizeDiagEntry", "saveProfileDiag"
+    "DIAG_TEXT_CAP", "DIAG_SOURCE_CAP", "capText"
   ]);
   var sleep = domMod.sleep,
       makePhaseTimer = domMod.makePhaseTimer,
@@ -91,14 +90,9 @@
       feedDeltaCount = notesMod.feedDeltaCount,
       prepareNotesSection = notesMod.prepareNotesSection,
       postKeywordHitsToNotes = notesMod.postKeywordHitsToNotes;
-  var DIAG_KEY_PREFIX = diagMod.DIAG_KEY_PREFIX,
-      DIAG_MAX_ENTRIES = diagMod.DIAG_MAX_ENTRIES,
-      DIAG_TEXT_CAP = diagMod.DIAG_TEXT_CAP,
+  var DIAG_TEXT_CAP = diagMod.DIAG_TEXT_CAP,
       DIAG_SOURCE_CAP = diagMod.DIAG_SOURCE_CAP,
-      capText = diagMod.capText,
-      getDiagRawCapture = diagMod.getDiagRawCapture,
-      sanitizeDiagEntry = diagMod.sanitizeDiagEntry,
-      saveProfileDiag = diagMod.saveProfileDiag;
+      capText = diagMod.capText;
 
   /* ── Core: run keyword triage on a single profile page ── */
 
@@ -117,7 +111,7 @@
       return runBooleanTriageWithDoc(doc, win, config, options, log);
     }
 
-    var diagRawCapture = await getDiagRawCapture();
+    var diag = null;
 
     var kwMeta = (typeof resolveKeywordsWithMeta === "function")
       ? resolveKeywordsWithMeta(config.keywords || "")
@@ -308,7 +302,7 @@
     if (textLen < 50) {
       log.push({ ok: false, msg: "Very little text found on page — resume may not have loaded." });
       try {
-        saveProfileDiag({
+        if (config.diagnose) diag = ({
           schemaVersion: 1, type: "keyword", timestamp: Date.now(),
           profileUrl: (function () { try { return doc.location.href; } catch (_) { return ""; } })(),
           userInput: String(config.keywords || ""),
@@ -332,9 +326,9 @@
           durationMs: Math.round(performance.now() - _t0),
           timings: phase.phases,
           log: log.slice(),
-        }, diagRawCapture);
+        });
       } catch (_) {}
-      return { log: log, moved: false, skipped: true, matchedKeywords: [], hitCount: 0, timings: phase.phases,
+      return { diag: diag, log: log, moved: false, skipped: true, matchedKeywords: [], hitCount: 0, timings: phase.phases,
                textStats: { headerLen: (headerText||"").length, resumeLen: 0, profileLen: 0, totalLen: 0 } };
     }
 
@@ -359,11 +353,6 @@
 
     log.push({ ok: true, msg: "Matched " + hitCount + "/" + userKeywordCount + " keywords: " + (hitLabels.length ? hitLabels.join(", ") : "(none)"),
                ms: Math.round(performance.now() - _t2) });
-
-    if (diagRawCapture && hitCount === 0 && textLen >= 200) {
-      var sample = allText.slice(0, 300).replace(/\s+/g, " ");
-      log.push({ ok: false, msg: "TEXT_SAMPLE: " + sample });
-    }
     phase.mark("match");
 
     var notesPosted = false;
@@ -406,7 +395,7 @@
 
     var _totalMs = Math.round(performance.now() - _t0);
     try {
-      saveProfileDiag({
+      if (config.diagnose) diag = ({
         schemaVersion: 1, type: "keyword", timestamp: Date.now(),
         profileUrl: (function () { try { return doc.location.href; } catch (_) { return ""; } })(),
         userInput: String(config.keywords || ""),
@@ -430,9 +419,9 @@
         durationMs: _totalMs,
         timings: phase.phases,
         log: log.slice(),
-      }, diagRawCapture);
+      });
     } catch (_) {}
-    return { log: log, moved: false, skipped: false, matchedKeywords: hitLabels, hitCount: hitCount,
+    return { diag: diag, log: log, moved: false, skipped: false, matchedKeywords: hitLabels, hitCount: hitCount,
              notesPosted: notesPosted, notesFailReason: notesFailReason, totalMs: _totalMs, timings: phase.phases,
              textStats: { headerLen: (headerText||"").length, resumeLen: (resumeText||"").length,
                           profileLen: (profileText||"").length, totalLen: textLen } };
@@ -440,7 +429,7 @@
 
   async function runBooleanTriageWithDoc(doc, win, config, options, log) {
     var _tBool0 = performance.now();
-    var diagRawCapture = await getDiagRawCapture();
+    var diag = null;
     var postToNotes = !!config.postToNotes;
     var booleanQueryRaw = String(config.booleanQuery || "").trim();
     var opens = (booleanQueryRaw.match(/\(/g) || []).length;
@@ -621,7 +610,7 @@
     if (textLen < 50) {
       log.push({ ok: false, msg: "Very little text found on page — resume may not have loaded." });
       try {
-        saveProfileDiag({
+        if (config.diagnose) diag = ({
           schemaVersion: 1, type: "boolean", timestamp: Date.now(),
           profileUrl: (function () { try { return doc.location.href; } catch (_) { return ""; } })(),
           userInput: booleanQueryRaw,
@@ -645,9 +634,9 @@
           durationMs: Math.round(performance.now() - _tBool0),
           timings: phase.phases,
           log: log.slice(),
-        }, diagRawCapture);
+        });
       } catch (_) {}
-      return { log: log, moved: false, skipped: true, matchedKeywords: [], hitCount: 0, timings: phase.phases,
+      return { diag: diag, log: log, moved: false, skipped: true, matchedKeywords: [], hitCount: 0, timings: phase.phases,
                textStats: { headerLen: (headerText||"").length, resumeLen: 0, profileLen: 0, totalLen: 0 } };
     }
 
@@ -753,7 +742,7 @@
     var missedPositiveCanons  = positiveTerms.filter(function (t) { return  !matchedSet[t.trim().toLowerCase()]; });
 
     try {
-      saveProfileDiag({
+      if (config.diagnose) diag = ({
         schemaVersion: 1, type: "boolean", timestamp: Date.now(),
         profileUrl: (function () { try { return doc.location.href; } catch (_) { return ""; } })(),
         userInput: booleanQueryRaw,
@@ -778,10 +767,10 @@
         timings: phase.phases,
         log: log.slice(),
         booleanPass: booleanPass,
-      }, diagRawCapture);
+      });
     } catch (_) {}
 
-    return {
+    return { diag: diag,
       log: log,
       moved: false,
       skipped: false,
@@ -942,11 +931,6 @@
       stripExcludedText: stripExcludedText,
       capText: capText,
       makePhaseTimer: makePhaseTimer,
-      saveProfileDiag: saveProfileDiag,
-      sanitizeDiagEntry: sanitizeDiagEntry,
-      getDiagRawCapture: getDiagRawCapture,
-      DIAG_KEY_PREFIX: DIAG_KEY_PREFIX,
-      DIAG_MAX_ENTRIES: DIAG_MAX_ENTRIES,
       DIAG_TEXT_CAP: DIAG_TEXT_CAP,
       DIAG_SOURCE_CAP: DIAG_SOURCE_CAP,
     };

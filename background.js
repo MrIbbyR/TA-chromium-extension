@@ -29,8 +29,21 @@ function ensureSessionAccess() {
   }
 }
 ensureSessionAccess();
-chrome.runtime.onInstalled.addListener(() => { ensureSessionAccess(); });
-chrome.runtime.onStartup.addListener(() => { ensureSessionAccess(); });
+chrome.runtime.onInstalled.addListener(() => { ensureSessionAccess(); purgeCandidateData(); });
+chrome.runtime.onStartup.addListener(() => { ensureSessionAccess(); purgeCandidateData(); });
+
+// GDPR: no candidate data is kept after a run — not even profile URLs. Older versions
+// saved per-profile diagnostics (lastRunDiag_*), a raw-text switch and per-profile
+// last-run results in chrome.storage.local; delete them on install/update and startup.
+function purgeCandidateData() {
+  return chrome.storage.local.get(null).then((all) => {
+    const keys = Object.keys(all || {}).filter((k) => k.startsWith("lastRunDiag_") || k === "srDiagRawCapture");
+    for (const k of ["keywordTriageLastRun", "salaryTriageLastRun"]) {
+      if (all[k] && (all[k].results || all[k].log)) keys.push(k);
+    }
+    if (keys.length) return chrome.storage.local.remove(keys);
+  }).catch(() => {});
+}
 
 // Dev shortcut (manifest "commands": ⌘⇧U / Ctrl+Shift+U): reload the extension, then
 // refresh every SmartRecruiters tab — a reload doesn't re-inject content scripts into
@@ -575,10 +588,16 @@ function finishIfDrained(ctx, { stopped = false } = {}) {
   const scanned = results.length - failed;
   const plural = (n) => n + " profile" + (n !== 1 ? "s" : "");
   const salary = q.feature === "salary";
-  const lastRun = { finishedAt, results, parallel: true, total: q.order.length, stoppedReason: q.trippedReason };
+  // Only totals and durations are saved: no URL, keyword or anything else per candidate.
+  const lastRun = {
+    finishedAt, parallel: true, total: q.order.length, stoppedReason: q.trippedReason,
+    totals: runTotals(results), timings: results.filter((r) => !r.error && r.timings).map((r) => r.timings),
+  };
   chrome.storage.local
     .set({ [salary ? "salaryTriageLastRun" : "keywordTriageLastRun"]: lastRun })
     .catch(() => {});
+  // Per-profile results go to the popup if it is open, in memory only — never stored.
+  try { chrome.runtime.sendMessage({ type: "srRunFinished", feature: q.feature, results }).catch(() => {}); } catch (_) {}
   if (q.trippedReason) {
     const label = BREAKER_LABELS[q.trippedReason] || q.trippedReason;
     showNotification(
@@ -607,27 +626,26 @@ function finishIfDrained(ctx, { stopped = false } = {}) {
     );
   }
   playBeepInSRTab(q.returnUrl || "");
-  pruneProfileDiags();
   sweepRunTabs(q);
   ctx.q = null;
   chrome.alarms.clear(WATCHDOG_ALARM).catch(() => {});
   return true;
 }
 
-// Per-profile diagnostics (lastRunDiag_<ts>, candidate PII) are capped at 20. The worker
-// trims after each save, but a worker tab closed right after its last profile can die
-// before its trim runs — so trim once more here, where nothing closes under us.
-const DIAG_PREFIX = "lastRunDiag_";
-const DIAG_MAX_ENTRIES = 20;
-function pruneProfileDiags() {
-  chrome.storage.local.get(null).then((all) => {
-    const ts = (k) => parseInt(k.slice(DIAG_PREFIX.length), 10) || 0;
-    const extra = Object.keys(all || {})
-      .filter((k) => k.startsWith(DIAG_PREFIX))
-      .sort((a, b) => ts(b) - ts(a))
-      .slice(DIAG_MAX_ENTRIES);
-    if (extra.length) return chrome.storage.local.remove(extra);
-  }).catch(() => {});
+// Counts for the saved last run. Failures are counted by reason (never as "0 hits").
+function runTotals(results) {
+  const failed = {};
+  for (const r of results) if (r.error) failed[r.error] = (failed[r.error] || 0) + 1;
+  const scanned = results.filter((r) => !r.error);
+  return {
+    processed: results.length,
+    scanned: scanned.length,
+    matched: scanned.filter((r) => r.hitCount > 0).length,
+    notesPosted: scanned.filter((r) => r.notesPosted).length,
+    notesFailed: scanned.filter((r) => r.hitCount > 0 && !r.notesPosted).length,
+    moved: scanned.filter((r) => r.moved).length,
+    failed,
+  };
 }
 
 function startQueue(feature, message) {

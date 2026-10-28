@@ -109,19 +109,7 @@
 
   async function finishQueue(state, resultsLen) {                              // P0-2: made async
     await __srSessionRemove(KEY);                                              // P0-2: was sessionStorage.removeItem
-    try {
-      if (chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({
-          salaryTriageLastRun: {
-            finishedAt: Date.now(),
-            log: (state.log || []).filter(function (e) {                       // P0-3: filter salary amounts from log
-              return !(e.msg && /^Parsed amount:/i.test(e.msg));
-            }),
-            results: state.results || [],
-          },
-        });
-      }
-    } catch (_) {}
+    // GDPR: per-profile results and logs are not saved after the run.
     try {
       if (chrome.runtime && chrome.runtime.sendMessage) {
         chrome.runtime.sendMessage({ type: "srCloseExtraProfileTabs" }, function () {

@@ -82,7 +82,7 @@ keyword-matching.js         Keyword normalization, matching, boolean parser (no 
 keyword-extract.js          Resume / header / location / screening text from the profile
 keyword-pipeline.js         Move Forward + applicant-list URL harvesting
 keyword-notes.js            Builds and posts the keyword "Note to self"
-keyword-diag.js             Per-profile diagnostics (Inspect diagnostics)
+keyword-diag.js             Limits for Diagnose this profile (dev builds; nothing stored)
 keyword-triage-autorun.js   Parallel worker state machine + URL queue
 keyword-expansions.js       Shared abbreviation/synonym expansion table
 xlsx-mini.js                Self-contained async XLSX parser (no SheetJS, no DOM parser)
@@ -108,8 +108,8 @@ NIQ logo.png                Header logo in popup UI
 |---|---|---|
 | `chrome.storage.local` | `usageCount` | Mr Offer usage counter |
 | `chrome.storage.local` | `salaryTriageMax/Min` | Cost Assist settings |
-| `chrome.storage.local` | `kwTriageKeywords/MinHits/PostToNotes/DryRun/Mode/BooleanQuery/Workers` | Keyword Search settings |
-| `chrome.storage.local` | `salaryTriageLastRun`, `keywordTriageLastRun` | Last run results |
+| `chrome.storage.local` | `kwTriageKeywords/Mode/BooleanQuery` | Keyword Search settings |
+| `chrome.storage.local` | `salaryTriageLastRun`, `keywordTriageLastRun` | Last run totals only (counts, step durations) — nothing per candidate |
 | `chrome.storage.local` | `srParallelWorkerConfig`, `srParallelWorkerActive` | Parallel worker state |
 | `sessionStorage` | `sr_ext_salary_triage_v1` | Cost Assist URL queue |
 | `sessionStorage` | `sr_ext_keyword_triage_v1` | Keyword Search URL queue |

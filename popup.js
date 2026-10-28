@@ -1,30 +1,17 @@
 // popup.js — NIQ TA Helper: Offer + Cost assist + Keyword/Boolean
 // Uses xlsx-mini.js (local, self-contained — no CDN required).
 
-// ── GDPR storage limitation (Art. 5(1)(e)): lazy-GC of expired local PII ──
-// Runs on every popup open (the recruiter's normal entry point), so no scheduler is
-// needed. Diagnostics expire after 7 days; last-run result snapshots after 24 hours.
-(async function purgeExpiredRetention() {
+// ── GDPR: no candidate data is kept after a run ──
+// Older versions saved per-profile diagnostics (lastRunDiag_*), a raw-text switch and
+// per-profile last-run results. Delete them on every popup open (background.js does the
+// same on install/startup).
+(async function purgeCandidateData() {
   try {
     if (!(typeof chrome !== "undefined" && chrome.storage && chrome.storage.local)) return;
-    const DIAG_PREFIX = "lastRunDiag_";
-    const DIAG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-    const DIAG_MAX_ENTRIES = 20;
-    const LASTRUN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-    const now = Date.now();
     const all = await chrome.storage.local.get(null);
-    const toRemove = [];
-    const diagTs = (k) => parseInt(k.slice(DIAG_PREFIX.length), 10) || 0;
-    // Newest first; beyond the count cap or past the TTL → remove.
-    const diagKeys = Object.keys(all).filter((k) => k.indexOf(DIAG_PREFIX) === 0).sort((a, b) => diagTs(b) - diagTs(a));
-    diagKeys.forEach((k, i) => {
-      if (i >= DIAG_MAX_ENTRIES || diagTs(k) < now - DIAG_MAX_AGE_MS) toRemove.push(k);
-    });
+    const toRemove = Object.keys(all).filter((k) => k.indexOf("lastRunDiag_") === 0 || k === "srDiagRawCapture");
     for (const k of ["keywordTriageLastRun", "salaryTriageLastRun"]) {
-      const rec = all[k];
-      if (rec && typeof rec.finishedAt === "number" && rec.finishedAt < now - LASTRUN_MAX_AGE_MS) {
-        toRemove.push(k);
-      }
+      if (all[k] && (all[k].results || all[k].log)) toRemove.push(k);
     }
     if (toRemove.length) await chrome.storage.local.remove(toRemove);
   } catch (_) {}
@@ -1366,63 +1353,36 @@ btnKwStop.addEventListener("click", async () => {
   setKwStatus("salary-done", "Stopped");
 });
 
-// ── View Last Run diagnostics ──
+// ── View Last Run: totals only ──
+// GDPR: the saved last run has counts and durations, nothing per candidate (no URLs).
 const btnKwLastRun = document.getElementById("btnKwLastRun");
 if (btnKwLastRun) {
   btnKwLastRun.addEventListener("click", async () => {
     kwStatusBox.classList.add("visible");
     kwLogEl.innerHTML = "";
     try {
-      const data = await chrome.storage.local.get("keywordTriageLastRun");
-      const run = data.keywordTriageLastRun;
-      // Storage limitation (Art. 5(1)(e)): ignore + purge snapshots older than 24h.
-      const LASTRUN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-      if (run && typeof run.finishedAt === "number" && run.finishedAt < Date.now() - LASTRUN_MAX_AGE_MS) {
-        try { await chrome.storage.local.remove("keywordTriageLastRun"); } catch (_) {}
-        kwLog("✗", "Previous run data expired (older than 24h) — run a keyword search first.");
-        setKwStatus("error", "Expired");
-        return;
-      }
-      if (!run) {
+      const run = (await chrome.storage.local.get("keywordTriageLastRun")).keywordTriageLastRun;
+      if (!run || !run.totals) {
         kwLog("✗", "No previous run data found — run a keyword search first.");
         setKwStatus("error", "No data");
         return;
       }
-
-      const results = run.results || [];
+      const t = run.totals;
       const time = run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString() : "?";
-      const sum = summarizeKeywordRun(results);
-
-      const timings = results.map(r => r.totalMs).filter(Boolean);
-      const avgTime = timings.length ? (timings.reduce((a, b) => a + b, 0) / timings.length / 1000).toFixed(1) : null;
-      const timeSummary = avgTime ? `  ·  ~${avgTime}s/profile` : "";
-      kwLog("✓", `Last run: ${results.length} profiles @ ${time}${timeSummary}`);
-      kwLog(sum.matched > 0 ? "✓" : "✗",
-        `${sum.matched} matched  ·  ${sum.notesPosted} notes posted  ·  ${sum.moved} moved fwd  ·  ${sum.skipped} skipped`);
+      kwLog("✓", `Last run: ${t.processed} profiles @ ${time}`);
+      kwLog(t.matched > 0 ? "✓" : "✗", `${t.matched} matched  ·  ${t.notesPosted} notes posted  ·  ${t.moved} moved fwd`);
       const stopped = stoppedEarlyLine(run);
       if (stopped) kwLog("⚠", stopped);
-      if (sum.failed > 0) {
-        kwLog("⚠", `${sum.failed} profile${sum.failed > 1 ? "s" : ""} not scanned (see ⚠ lines below) — re-run ${sum.failed > 1 ? "them" : "it"}`);
+      for (const [reason, n] of Object.entries(t.failed || {})) {
+        kwLog("⚠", `${n} profile${n > 1 ? "s" : ""} not scanned — ${failureLabel(reason)}`);
       }
-      if (sum.notesFailed > 0) {
-        kwLog("✗", `${sum.notesFailed} note${sum.notesFailed > 1 ? "s" : ""} failed to post — see ↳ details below`);
-      }
-      const [timingHead, ...timingRows] = formatPhaseTimings(summarizePhaseTimings(results));
+      if (t.notesFailed > 0) kwLog("✗", `${t.notesFailed} note${t.notesFailed > 1 ? "s" : ""} failed to post`);
+      const [timingHead, ...timingRows] = formatPhaseTimings(summarizePhaseTimings((run.timings || []).map((timings) => ({ timings }))));
       if (timingHead) {
         kwLog("·", timingHead);
         for (const row of timingRows) kwLogSub(row);
       }
-
-      for (const r of results.slice(0, 40)) {
-        const line = formatKeywordResult(r);
-        kwLog(line.icon, line.text);
-        // Show per-profile diagnostic log for note failures and 0-hit profiles.
-        if (r.diagLog && r.diagLog.length) {
-          for (const entry of r.diagLog) kwLogSub(entry);
-        }
-      }
-
-      setKwStatus("salary-done", `Last run: ${results.length} profiles`);
+      setKwStatus("salary-done", `Last run: ${t.processed} profiles`);
     } catch (e) {
       kwLog("✗", String(e?.message || e));
       setKwStatus("error", "Failed to load");
@@ -1430,11 +1390,41 @@ if (btnKwLastRun) {
   });
 }
 
-// ── Inspect per-profile diagnostics (last 20 profile scans) ──
-const btnKwDiagHistory = document.getElementById("btnKwDiagHistory");
-const kwDiagPanel      = document.getElementById("kwDiagPanel");
-if (btnKwDiagHistory && kwDiagPanel) {
-  const DIAG_PREFIX = "lastRunDiag_";
+// ── Per-profile results of a run that finishes while the popup is open ──
+// The background sends them once, in memory; they are never stored.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg || msg.type !== "srRunFinished" || !Array.isArray(msg.results)) return;
+  if (msg.feature === "keyword") {
+    kwStatusBox.classList.add("visible");
+    kwLog("✓", `Run finished: ${msg.results.length} profiles`);
+    for (const r of msg.results) {
+      const line = formatKeywordResult(r);
+      kwLog(line.icon, line.text);
+      for (const entry of r.diagLog || []) kwLogSub(entry);
+    }
+    setKwStatus("salary-done", `Done: ${msg.results.length} profiles`);
+  } else if (msg.feature === "salary") {
+    salaryStatusBox.classList.add("visible");
+    salaryLog("✓", `Run finished: ${msg.results.length} profiles`);
+    for (const r of msg.results) {
+      const seg = (r.url || "").split("/").slice(-2, -1)[0] || "";
+      if (r.error) salaryLog("⚠", `[${seg}] not screened — ${failureLabel(r.error)}`);
+      else salaryLog(r.moved ? "✓" : "·", `[${seg}] ${r.moved ? "moved fwd" : "not moved"}`);
+    }
+    setSalaryStatus("salary-done", `Done: ${msg.results.length} profiles`);
+  }
+});
+
+// ── Diagnose this profile (dev builds only) ──
+// Shown only when the manifest has the dev-reload command, which scripts/package.sh
+// strips from release zips — so recruiters never see it. Scans the open profile with
+// the current keywords (no note, no move) and shows what was read and matched. The
+// result lives in this popup only; nothing is stored.
+const btnKwDiagnose = document.getElementById("btnKwDiagnose");
+const kwDiagPanel   = document.getElementById("kwDiagPanel");
+const isDevBuild = !!(chrome.runtime.getManifest().commands || {})["dev-reload"];
+if (btnKwDiagnose && kwDiagPanel && isDevBuild) {
+  btnKwDiagnose.style.display = "";
 
   function escapeHtml(s) {
     return String(s == null ? "" : s)
@@ -1442,31 +1432,16 @@ if (btnKwDiagHistory && kwDiagPanel) {
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
-  function shortUrl(u) {
-    if (!u) return "(no url)";
-    const seg = u.split("/").filter(Boolean).pop() || u;
-    return seg.length > 28 ? seg.slice(0, 28) + "…" : seg;
-  }
+  const textBox = (label, text, h) =>
+    `<div><b>${label}</b> (${(text || "").length})</div><textarea readonly style="width:100%;height:${h}px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;border:1px solid var(--border);padding:4px">${escapeHtml(text || "")}</textarea>`;
 
-  async function loadDiagEntries() {
-    const all = await chrome.storage.local.get(null);
-    const entries = [];
-    for (const k of Object.keys(all)) {
-      if (k.indexOf(DIAG_PREFIX) === 0) entries.push(all[k]);
-    }
-    entries.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    return entries;
-  }
-
-  function renderDetail(entry) {
-    const t = new Date(entry.timestamp || 0).toLocaleString();
+  function renderDiag(entry, result) {
     const stats = entry.textStats || {};
     const src = entry.textSources || {};
+    const logLines = (result.log || []).map((e) => (e.ok ? "· " : "✗ ") + (e.msg || ""));
     return `
-      <div style="padding:6px 0;border-top:1px dashed var(--border);margin-top:4px">
-        <div style="color:var(--muted);font-size:11px">${escapeHtml(t)}</div>
-        <div style="word-break:break-all"><a href="${escapeHtml(entry.profileUrl||'')}" target="_blank" style="color:var(--accent)">${escapeHtml(entry.profileUrl||'(no url)')}</a></div>
-        <div style="margin-top:4px">
+      <div style="padding:6px 0">
+        <div>
           <span style="color:var(--accent)">matched:</span> ${escapeHtml((entry.matchedUserKeywords||[]).join(", ") || "—")}
         </div>
         <div>
@@ -1482,99 +1457,56 @@ if (btnKwDiagHistory && kwDiagPanel) {
           timings: ${escapeHtml(Object.entries(entry.timings).map(([k, v]) => `${k} ${v}ms`).join(" · "))}
         </div>` : ""}
         <details style="margin-top:6px">
+          <summary style="cursor:pointer;color:var(--accent)">log (${logLines.length} lines)</summary>
+          <div style="color:var(--muted);font-size:11px">${logLines.map(escapeHtml).join("<br>")}</div>
+        </details>
+        <details style="margin-top:4px">
           <summary style="cursor:pointer;color:var(--accent)">extractedText (${(entry.extractedText||"").length} chars)</summary>
           <textarea readonly style="width:100%;height:180px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;border:1px solid var(--border);padding:4px;margin-top:4px">${escapeHtml(entry.extractedText||"")}</textarea>
         </details>
         <details style="margin-top:4px">
           <summary style="cursor:pointer;color:var(--accent)">per-source text</summary>
           <div style="font-size:11px">
-            <div><b>header</b> (${(src.header||"").length})</div><textarea readonly style="width:100%;height:60px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;border:1px solid var(--border);padding:4px">${escapeHtml(src.header||"")}</textarea>
-            <div><b>resume</b> (${(src.resume||"").length})</div><textarea readonly style="width:100%;height:80px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;border:1px solid var(--border);padding:4px">${escapeHtml(src.resume||"")}</textarea>
-            <div><b>profile</b> (${(src.profile||"").length})</div><textarea readonly style="width:100%;height:60px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;border:1px solid var(--border);padding:4px">${escapeHtml(src.profile||"")}</textarea>
-            <div><b>screening</b> (${(src.screening||"").length})</div><textarea readonly style="width:100%;height:50px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;border:1px solid var(--border);padding:4px">${escapeHtml(src.screening||"")}</textarea>
-            <div><b>fullPage</b> (${(src.fullPage||"").length})</div><textarea readonly style="width:100%;height:80px;background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;border:1px solid var(--border);padding:4px">${escapeHtml(src.fullPage||"")}</textarea>
+            ${textBox("header", src.header, 60)}
+            ${textBox("resume", src.resume, 80)}
+            ${textBox("profile", src.profile, 60)}
+            ${textBox("screening", src.screening, 50)}
+            ${textBox("fullPage", src.fullPage, 80)}
           </div>
         </details>
       </div>
     `;
   }
 
-  btnKwDiagHistory.addEventListener("click", async () => {
+  btnKwDiagnose.addEventListener("click", async () => {
     kwStatusBox.classList.add("visible");
-    if (kwDiagPanel.style.display === "block") {
-      kwDiagPanel.style.display = "none";
-      kwDiagPanel.innerHTML = "";
-      return;
-    }
     kwDiagPanel.style.display = "block";
-    kwDiagPanel.innerHTML = '<div style="color:var(--muted)">loading…</div>';
+    kwDiagPanel.innerHTML = '<div style="color:var(--muted)">scanning this profile…</div>';
     try {
-      const entries = await loadDiagEntries();
-      if (!entries.length) {
-        kwDiagPanel.innerHTML = '<div style="color:var(--muted);padding:4px">No diagnostics yet — run a keyword search on at least one profile.</div>';
+      const cfg = { ...readKwConfig(1), postToNotes: false, salaryNotes: false, diagnose: true };
+      if (cfg.mode === "boolean" ? !cfg.booleanQuery : !cfg.keywords) {
+        kwDiagPanel.innerHTML = '<div style="color:var(--warn)">Enter keywords (or a boolean query) first.</div>';
         return;
       }
-      let html = `<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
-        <span style="color:var(--muted)">${entries.length} entries</span>
-        <button type="button" id="kwDiagCopyJson" class="btn-salary secondary" style="font-size:11px;padding:2px 8px">Copy all JSON</button>
-        <button type="button" id="kwDiagClear" class="btn-salary danger" style="font-size:11px;padding:2px 8px" title="Erase all locally-stored candidate data: diagnostics + last-run results">Clear all candidate data</button>
-      </div>`;
-      entries.forEach((e, i) => {
-        const matched = (e.matchedUserKeywords || []).length;
-        const missed = (e.missedUserKeywords || []).length;
-        const t = new Date(e.timestamp || 0).toLocaleTimeString();
-        html += `<div data-diag-row="${i}" style="cursor:pointer;padding:4px 0;border-bottom:1px solid var(--border)">
-          <span style="color:var(--muted)">${escapeHtml(t)}</span>
-          · <span>${escapeHtml(shortUrl(e.profileUrl))}</span>
-          · <span style="color:var(--accent)">${matched}✓</span>
-          · <span style="color:var(--warn)">${missed}✗</span>
-        </div>
-        <div id="kwDiagDetail_${i}" style="display:none"></div>`;
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id || !/smartrecruiters\.com/i.test(tab.url || "")) {
+        kwDiagPanel.innerHTML = '<div style="color:var(--warn)">Open a candidate profile in SmartRecruiters first.</div>';
+        return;
+      }
+      await ensureKeywordCore(tab.id);
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: false },
+        func: (c) => (typeof globalThis.__srKeywordTriageRunMulti === "function" ? globalThis.__srKeywordTriageRunMulti(c) : null),
+        args: [cfg],
       });
-      kwDiagPanel.innerHTML = html;
-
-      kwDiagPanel.querySelectorAll("[data-diag-row]").forEach((row) => {
-        row.addEventListener("click", () => {
-          const idx = row.getAttribute("data-diag-row");
-          const detail = document.getElementById(`kwDiagDetail_${idx}`);
-          if (!detail) return;
-          if (detail.style.display === "block") {
-            detail.style.display = "none";
-            detail.innerHTML = "";
-          } else {
-            detail.style.display = "block";
-            detail.innerHTML = renderDetail(entries[Number(idx)]);
-          }
-        });
-      });
-
-      document.getElementById("kwDiagCopyJson")?.addEventListener("click", async (ev) => {
-        ev.stopPropagation();
-        try {
-          await navigator.clipboard.writeText(JSON.stringify(entries, null, 2));
-          ev.target.textContent = "Copied!";
-          setTimeout(() => { ev.target.textContent = "Copy all JSON"; }, 1500);
-        } catch (e) {
-          ev.target.textContent = "Copy failed";
-        }
-      });
-
-      document.getElementById("kwDiagClear")?.addEventListener("click", async (ev) => {
-        ev.stopPropagation();
-        // Data-subject erasure (Art. 17): wipe ALL locally-stored candidate data —
-        // diagnostics AND the last-run result snapshots (keyword + salary), not just diags.
-        const all = await chrome.storage.local.get(null);
-        const keys = Object.keys(all).filter(k => k.indexOf(DIAG_PREFIX) === 0);
-        for (const k of ["keywordTriageLastRun", "salaryTriageLastRun"]) {
-          if (k in all) keys.push(k);
-        }
-        if (!keys.length) {
-          kwDiagPanel.innerHTML = '<div style="color:var(--muted);padding:4px">Nothing to clear.</div>';
-          return;
-        }
-        await chrome.storage.local.remove(keys);
-        kwDiagPanel.innerHTML = '<div style="color:var(--muted);padding:4px">Cleared all candidate data (diagnostics + last-run results).</div>';
-      });
+      const result = res?.result;
+      if (!result) {
+        kwDiagPanel.innerHTML = '<div style="color:var(--warn)">The scan did not run — reload the profile and try again.</div>';
+      } else if (!result.diag) {
+        kwDiagPanel.innerHTML = `<div style="color:var(--warn)">${escapeHtml((result.log || []).map((e) => e.msg).join(" · ") || "No diagnostics returned.")}</div>`;
+      } else {
+        kwDiagPanel.innerHTML = renderDiag(result.diag, result);
+      }
     } catch (e) {
       kwDiagPanel.innerHTML = `<div style="color:var(--warn)">Error: ${escapeHtml(String(e?.message || e))}</div>`;
     }

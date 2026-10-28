@@ -710,7 +710,8 @@
       </div>
       <button type="button" class="btn-salary danger" id="btnKwStop">Stop</button>
       <button type="button" class="btn-salary secondary" id="btnKwLastRun">View Last Run</button>
-      <button type="button" class="btn-salary secondary" id="btnKwDiagHistory">Inspect diagnostics</button>
+      <!-- Dev builds only (popup.js shows it when the dev-reload command is in the manifest). -->
+      <button type="button" class="btn-salary secondary" id="btnKwDiagnose" style="display:none" title="Scan the open profile with these keywords — no note, no move, nothing stored">Diagnose this profile</button>
     </div>
 
     <div class="status" id="kwStatusBox">
@@ -794,13 +795,9 @@
     <summary style="cursor:pointer;color:var(--accent)">Data &amp; Privacy</summary>
     <div style="margin-top:6px;line-height:1.5">
       <p style="margin:4px 0"><b>No candidate data leaves your browser.</b> This extension makes zero external network calls — everything stays on this device and within SmartRecruiters.</p>
-      <p style="margin:4px 0">Stored locally (<code>chrome.storage.local</code>) on this device only:</p>
-      <ul style="margin:4px 0 4px 16px;padding:0">
-        <li><b>Diagnostics</b> — text lengths, keyword match results, and the profile URL, to debug missed keywords. Raw resume text is <b>not</b> stored unless <code>srDiagRawCapture</code> is explicitly enabled for debugging. Auto-deleted after <b>7 days</b> (max 20 entries).</li>
-        <li><b>Last-run results</b> (keyword &amp; salary) — profile URLs and match/move outcomes. Auto-deleted after <b>24 hours</b>.</li>
-        <li>Salary screening answers are <b>redacted</b> from logs; only the in/out-of-budget Move action is recorded.</li>
-      </ul>
-      <p style="margin:4px 0">To erase everything now: <b>Keyword</b> tab → <b>Inspect diagnostics</b> → <b>Clear all candidate data</b>.</p>
+      <p style="margin:4px 0"><b>No candidate data is stored.</b> Profile links, names, resume text, keyword matches and salary answers are used only while a profile is being scanned, then discarded. Nothing about a candidate is logged.</p>
+      <p style="margin:4px 0">Kept on this device (<code>chrome.storage.local</code>): your settings, and the last run's <b>totals only</b> (how many profiles were matched, noted, moved or not scanned, and how long each step took) — nothing that identifies a candidate.</p>
+      <p style="margin:4px 0">While a run is going, the list of profile links to visit is held in browser memory (<code>chrome.storage.session</code>) and deleted when the run ends or the browser closes.</p>
     </div>
   </details>
 

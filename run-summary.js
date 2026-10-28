@@ -21,7 +21,7 @@ const PAUSE_STOP_REASONS = ["logged_out", "bot_check"];
 // and saves `stoppedReason` + `total` on the last run. null for a normal run.
 function stoppedEarlyLine(run) {
   if (!run || !run.stoppedReason) return null;
-  const done = (run.results || []).length;
+  const done = run.totals ? run.totals.processed : (run.results || []).length;
   const why = PAUSE_STOP_REASONS.includes(run.stoppedReason)
     ? `Stopped: ${failureLabel(run.stoppedReason)} for 15 minutes. `
     : `Stopped early: 3 profiles in a row — ${failureLabel(run.stoppedReason)}. `;

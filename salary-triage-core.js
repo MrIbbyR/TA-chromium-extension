@@ -869,29 +869,10 @@
     return !!(mv || findStScreeningEl(doc));
   }
 
-  /**
-   * GDPR data-minimization gate (Art. 5(1)(c)). Resolves to the `srDiagRawCapture`
-   * setting in chrome.storage.local. Default FALSE: the raw screening answer (which
-   * contains the candidate's salary expectation verbatim) is NOT written to the run log.
-   * Flip to true only while actively debugging a parse miss. Resolves false in Node tests.
-   */
-  function getDiagRawCapture() {
-    return new Promise(function (resolve) {
-      try {
-        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return resolve(false);
-        chrome.storage.local.get(["srDiagRawCapture"], function (r) {
-          try { chrome.runtime && chrome.runtime.lastError; } catch (_) {}
-          resolve(!!(r && r.srDiagRawCapture === true));
-        });
-      } catch (_) { resolve(false); }
-    });
-  }
-
   async function runSalaryTriageWithDoc(doc, win, config, options) {
     options = options || {};
     const log = [];
     const subframeTriage = !!options.subframeTriage;
-    const diagRawCapture = await getDiagRawCapture();
 
     if (!isCandidateProfilePage(doc) && !subframeTriage) {
       log.push({
@@ -958,15 +939,13 @@
     const qPretty = picked[0];
     const answer = picked[1];
     log.push({ ok: true, msg: "Q: " + qPretty.slice(0, 120) + (qPretty.length > 120 ? "…" : "") });
-    log.push({ ok: true, msg: "A: " + (diagRawCapture ? (answer || "(empty)").slice(0, 120) : "[redacted — enable srDiagRawCapture to view]") });
+    // GDPR: the answer and the parsed amount (the candidate's salary) never go in the log.
 
     const amount = parseSalaryNumber(answer);
     if (amount == null || !isFinite(amount)) {
       log.push({ ok: false, msg: "Could not parse a number from answer" });
       return { log, moved: false, skipped: true, amount: null, inBudget: null };
     }
-
-    log.push({ ok: true, msg: "Parsed amount: " + amount });
 
     const inBudget = amount >= minSalary && amount <= maxSalary;
     log.push({

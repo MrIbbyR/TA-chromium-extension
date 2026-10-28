@@ -63,7 +63,7 @@ describe('browser path (no require)', () => {
       assert.equal(typeof ctx[fn], 'function', fn);
     }
     for (const fn of ['queryDeepSelectorAll', 'findKeywordHits', 'getResumeText',
-                      'harvestProfileUrls', 'postKeywordHitsToNotes', 'saveProfileDiag']) {
+                      'harvestProfileUrls', 'postKeywordHitsToNotes', 'capText']) {
       assert.equal(typeof ctx.__srKw[fn], 'function', '__srKw.' + fn);
     }
   });
