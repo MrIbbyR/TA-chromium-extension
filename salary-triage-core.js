@@ -907,7 +907,6 @@
       const m = parseBudgetAmount(config.minSalary);
       if (isFinite(m)) minSalary = m;
     }
-    const dryRun = !!config.dryRun;
     const moveIncludes = String(config.moveButtonIncludes || "").trim();
 
     if (!isFinite(maxSalary) || maxSalary <= 0) {
@@ -977,11 +976,6 @@
 
     if (!inBudget) {
       return { log, moved: false, skipped: false, amount: amount, inBudget: false };
-    }
-
-    if (dryRun) {
-      log.push({ ok: true, msg: "Dry run: would click Move forward (skipped)" });
-      return { log, moved: false, skipped: false, amount: amount, inBudget: true };
     }
 
     const moveSettleMs = Math.max(300, parseInt(config.moveSettleMs, 10) || 700);
@@ -1501,7 +1495,6 @@
         minSalary: config.minSalary,
         questionHints: config.questionHints,
         moveButtonIncludes: config.moveButtonIncludes,
-        dryRun: config.dryRun,
         screeningWaitMs: waitMs,
         moveSettleMs: moveSettleMs,
         afterMoveNavigateMs: afterMoveNavigateMs,

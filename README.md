@@ -51,7 +51,7 @@ Supports **single-tab** (sequential) and **parallel** (2–3 worker tabs) execut
 
 1. On a SmartRecruiters candidate list, use the **autoscroll** to harvest profile URLs (the extension scrolls the virtual list and collects links automatically).
 2. Open the extension popup → **Cost Assist** tab.
-3. Set your **Min** and **Max** salary budget, wait interval, and toggle **Dry Run** if you want to preview without clicking Move Forward.
+3. Set your **Min** and **Max** salary budget.
 4. Click **Start Queue** — the extension navigates each profile, reads the salary answer, and logs the result.
 
 ### Cntrl + F Search
@@ -107,7 +107,7 @@ NIQ logo.png                Header logo in popup UI
 | Store | Key | Feature |
 |---|---|---|
 | `chrome.storage.local` | `usageCount` | Mr Offer usage counter |
-| `chrome.storage.local` | `salaryTriageMax/Min/Wait/DryRun` | Cost Assist settings |
+| `chrome.storage.local` | `salaryTriageMax/Min` | Cost Assist settings |
 | `chrome.storage.local` | `kwTriageKeywords/MinHits/PostToNotes/DryRun/Mode/BooleanQuery/Workers` | Keyword Search settings |
 | `chrome.storage.local` | `salaryTriageLastRun`, `keywordTriageLastRun` | Last run results |
 | `chrome.storage.local` | `srParallelWorkerConfig`, `srParallelWorkerActive` | Parallel worker state |

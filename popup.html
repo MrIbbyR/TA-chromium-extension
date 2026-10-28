@@ -123,7 +123,6 @@
     }
     #panel-keyword .field-row input::placeholder { color: #6a7585; }
     #panel-keyword .field-hint { color: #d0d8e8; }
-    #panel-keyword .salary-check { color: #d0d8e8; }
 
     .kw-mode-toggle {
       display: flex;
@@ -479,16 +478,6 @@
     }
     .field-hint { font-size: 9px; color: #b0b8c8; margin-top: 3px; line-height: 1.35; }
     #panel-salary .field-hint { color: #d0d8e8; }
-    #panel-salary .salary-check { color: #d0d8e8; }
-    .salary-check {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-family: var(--display);
-      font-size: 11px;
-      color: var(--text);
-    }
-    .salary-check input { width: 14px; height: 14px; accent-color: var(--salary-accent); }
 
     .salary-actions {
       display: flex;
@@ -668,14 +657,6 @@
         <label for="salaryMin">Min (optional)</label>
         <input type="text" id="salaryMin" placeholder="0 or 10L" inputmode="decimal" />
       </div>
-      <div class="field-row">
-        <label for="salaryWait">Wait after Screening (ms)</label>
-        <input type="number" id="salaryWait" placeholder="600" min="200" step="100" />
-      </div>
-      <label class="salary-check">
-        <input type="checkbox" id="salaryDryRun" />
-        Dry run (read screening answer only, never click Move)
-      </label>
     </div>
 
     <div class="salary-actions">

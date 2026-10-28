@@ -361,7 +361,7 @@
       const controlsOk = await waitUntilSrControlsReady(queueReadyCap);
       if (__aborted) { await __srSessionRemove(KEY); return; }                 // P0-2: was sessionStorage.removeItem
       if (!controlsOk) {
-        showToast("Cost assist: pipeline UI not ready — increase Wait after Screening or check network.");
+        showToast("Cost assist: pipeline UI not ready — check network and try again.");
         state.log = (state.log || []).concat([
           { ok: false, msg: "Queue: timed out waiting for #st-moveForward / #st-screening after navigation." },
         ]);

@@ -126,8 +126,6 @@ const panelKeyword = document.getElementById("panel-keyword");
 
 const salaryMax       = document.getElementById("salaryMax");
 const salaryMin       = document.getElementById("salaryMin");
-const salaryWait      = document.getElementById("salaryWait");
-const salaryDryRun    = document.getElementById("salaryDryRun");
 const btnSalaryGo2x     = document.getElementById("btnSalaryGo2x");
 const btnSalaryGo3x     = document.getElementById("btnSalaryGo3x");
 const btnSalaryStop     = document.getElementById("btnSalaryStop");
@@ -139,8 +137,6 @@ const salaryLogEl       = document.getElementById("salaryLog");
 const SALARY_STORAGE_KEYS = [
   "salaryTriageMax",
   "salaryTriageMin",
-  "salaryTriageWait",
-  "salaryTriageDryRun",
 ];
 
 // ── Tabs ──
@@ -162,16 +158,12 @@ async function loadSalarySettings() {
   const s = await chrome.storage.local.get(SALARY_STORAGE_KEYS);
   if (s.salaryTriageMax != null) salaryMax.value = String(s.salaryTriageMax);
   if (s.salaryTriageMin != null) salaryMin.value = String(s.salaryTriageMin);
-  if (s.salaryTriageWait != null) salaryWait.value = String(s.salaryTriageWait);
-  if (s.salaryTriageDryRun === true) salaryDryRun.checked = true;
 }
 
 async function saveSalarySettings() {
   await chrome.storage.local.set({
     salaryTriageMax: salaryMax.value.trim(),
     salaryTriageMin: salaryMin.value.trim(),
-    salaryTriageWait: salaryWait.value.trim(),
-    salaryTriageDryRun: salaryDryRun.checked,
   });
 }
 
@@ -213,12 +205,10 @@ function readSalaryConfig() {
   return {
     maxSalary: salaryMax.value.trim(),
     minSalary: salaryMin.value.trim(),
-    dryRun: salaryDryRun.checked,
-    screeningWaitMs: salaryWait.value.trim() === "" ? 600 : parseInt(salaryWait.value, 10),
   };
 }
 
-[salaryMax, salaryMin, salaryWait, salaryDryRun].forEach((el) => {
+[salaryMax, salaryMin].forEach((el) => {
   if (!el) return;
   el.addEventListener("change", () => saveSalarySettings().catch(() => {}));
 });
@@ -717,7 +707,7 @@ async function handleSalaryGo(workers) {
     if (resp?.ok) {
       salaryLog("✓", "Dispatched " + urls.length + " profiles across " + workers + " workers.");
       if (resp.profilesPerMinute) salaryLog("·", "Paced to about " + resp.profilesPerMinute + " profiles a minute in total.");
-      salaryLog("✓", cfg.dryRun ? "Dry run: reading screening answers only (never clicks Move)." : "Workers run in the background — results saved when finished.");
+      salaryLog("✓", "Workers run in the background — results saved when finished.");
       setSalaryStatus("salary-done", "Cost assist running (" + workers + "× workers)");
     } else {
       salaryLog("✗", resp?.error || "Failed to start parallel queue.");
