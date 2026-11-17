@@ -1,35 +1,83 @@
 // keyword-expansions.js — shared expansion table: loaded by popup.html + content scripts
-// Exposes globals: KEYWORD_EXPANSIONS, KEYWORD_TYPO_ALIASES, resolveKeywords, buildExpansionTable
+// Exposes globals: KEYWORD_SYNONYM_GROUPS, KEYWORD_EXPANSIONS, KEYWORD_TYPO_ALIASES, resolveKeywords, buildExpansionTable, expansionsFor
 
-/* exported KEYWORD_EXPANSIONS, KEYWORD_TYPO_ALIASES, resolveKeywords, buildExpansionTable,
+/* exported KEYWORD_SYNONYM_GROUPS, KEYWORD_EXPANSIONS, KEYWORD_TYPO_ALIASES, resolveKeywords, buildExpansionTable, expansionsFor,
             parseKeywordsFromString, canonicalizeKeywords, expandKeywords, applyTypoAliases */
 
 var _RD = ["research and development", "research & development", "r and d", "r&d"];
 
+// ── Synonym groups ──
+// One line per skill: every way a CV might write it. Each form finds every other
+// form, in keyword and boolean search alike. Add a skill here as one line.
+// Case, hyphens/spaces/joined words ("Google-Cloud", "GoogleCloud") and plural
+// endings are matched automatically — list only genuinely different spellings.
+// A form must be proof of the skill on its own: no common words, no other products.
+var KEYWORD_SYNONYM_GROUPS = [
+  // Cloud
+  ["aws", "amazon web services", "amazon web service", "amazon cloud services", "amazon cloud service", "amazon cloud", "aws cloud"],
+  ["gcp", "google cloud platform", "google cloud", "google cloud services", "gcloud"],
+  ["azure", "microsoft azure", "ms azure", "azure cloud", "windows azure"],
+  ["kubernetes", "k8s"],
+  ["gke", "google kubernetes engine"],
+  ["eks", "amazon elastic kubernetes service", "elastic kubernetes service"],
+  ["aks", "azure kubernetes service"],
+
+  // ML / AI
+  ["ml", "machine learning"],
+  ["dl", "deep learning"],
+  ["ai", "artificial intelligence"],
+  ["nlp", "natural language processing"],
+  ["llm", "llms", "large language model"],
+  ["rag", "retrieval augmented generation"],
+  ["mlops", "ml ops", "machine learning operations", "ml operations"],
+  ["pytorch", "py torch"],
+  ["tensorflow", "tensor flow"],
+  ["sklearn", "scikit-learn"],
+  ["xgboost", "xgb"],
+  ["lightgbm", "lgbm", "light gbm"],
+  ["huggingface", "hugging face"],
+
+  // Identity & access
+  ["sso", "single sign-on"],
+  ["mfa", "2fa", "multi-factor authentication", "two-factor authentication"],
+  ["oidc", "openid connect"],
+  ["iam", "identity and access management", "identity access management"],
+  ["pam", "privileged access management"],
+  ["iga", "identity governance and administration", "identity governance"],
+  ["azure ad", "azure active directory", "entra id", "microsoft entra", "entra"],
+  ["sailpoint", "sail point"],
+  ["cyberark", "cyber ark"],
+  ["forgerock", "forge rock"],
+  ["beyondtrust", "beyond trust"],
+  ["pingidentity", "ping identity"],
+  ["pingfederate", "ping federate"],
+
+  // Domain
+  ["fmcg", "fast moving consumer goods"],
+  ["cpg", "consumer packaged goods"],
+  ["ctf", "capture the flag"],
+  ["ner", "named entity recognition"],
+  ["ocr", "optical character recognition"],
+  ["sql", "structured query language"],
+  ["nosql", "no sql"],
+  ["resilience", "resiliency"],
+];
+
+// ── One-way extras ──
+// Searching the key also finds these, but not the other way round — they are
+// related or broader terms, not the same skill (searching "container" must not
+// tag Docker). Groups above are merged in by buildExpansionTable().
 var KEYWORD_EXPANSIONS = {
   // ── R&D ──
   "r&d": _RD, "r and d": _RD, "r & d": _RD,
 
-  // ── ML / AI  — bidirectional so typing the full form also catches abbreviations ──
-  "ml":                          ["machine learning", "machine-learning"],
-  "machine learning":            ["ml"],
-  "dl":                          ["deep learning", "deep-learning"],
-  "deep learning":               ["dl", "neural network", "neural networks", "neural net"],
-  "ai":                          ["artificial intelligence", "artificial-intelligence"],
-  "artificial intelligence":     ["ai"],
-  "nlp":                         ["natural language processing", "natural-language processing"],
-  "natural language processing": ["nlp"],
-  "cv":                          ["computer vision"],
-  "computer vision":             ["cv"],
+  // ── ML / AI ──
+  "deep learning":  ["neural network", "neural networks", "neural net"],
+  // One-way only: every CV contains the word "CV", so "computer vision" must not find it.
+  "cv":             ["computer vision"],
 
-  // ── Cloud — bidirectional ──
-  "aws":                  ["amazon web services"],
-  "amazon web services":  ["aws"],
-  "gcp":                  ["google cloud platform", "google cloud"],
-  "google cloud platform":["gcp"],
-  "google cloud":         ["gcp"],
-  "azure":                ["microsoft azure", "ms azure", "azure devops", "azure cloud"],
-  "microsoft azure":      ["azure"],
+  // ── Cloud ──
+  "azure":          ["azure devops"],
 
   // ── Degrees ──
   "phd":                  ["ph.d", "ph.d.", "doctorate", "doctoral", "postdoctoral", "postdoc", "dphil", "doctor of philosophy"],
@@ -45,34 +93,22 @@ var KEYWORD_EXPANSIONS = {
   "bsc":                  ["b.s", "b.s.", "bachelor's", "bachelors", "b.sc"],
 
   // ── ML frameworks ──
-  "pytorch":      ["py torch", "py-torch", "torch", "pytorch lightning"],
-  "tensorflow":   ["tensor flow", "tensor-flow", "tensorflow 2", "tf2", "tf.keras", "tf"],
+  "pytorch":      ["torch", "pytorch lightning"],
+  "tensorflow":   ["tensorflow 2", "tf2", "tf.keras", "tf"],
   "tf":           ["tensorflow"],
   "keras":        ["tf.keras"],
-  "sklearn":      ["scikit-learn", "scikit learn"],
-  "scikit-learn": ["sklearn", "scikit learn"],
-  "scikit learn": ["sklearn", "scikit-learn"],
-  "xgboost":      ["xgb", "gradient boosting"],
-  "xgb":          ["xgboost"],
-  "lightgbm":     ["lgbm", "light gbm", "light gradient boosting"],
-  "lgbm":         ["lightgbm"],
+  "xgboost":      ["gradient boosting"],
+  "lightgbm":     ["light gradient boosting"],
   "catboost":     ["cat boost", "gradient boosting"],
 
   // ── LLMs / NLP ──
-  "llm":           ["large language model", "llms"],
-  "llms":          ["large language models", "llm"],
-  "rag":           ["retrieval augmented generation", "retrieval-augmented generation"],
   "transformer":   ["transformers"],
   "transformers":  ["transformer"],
   "bert":          ["roberta", "distilbert", "hugging face transformers"],
-  "hugging face":  ["huggingface", "hf transformers"],
-  "huggingface":   ["hugging face", "hf transformers"],
+  "huggingface":   ["hf transformers"],
+  "hugging face":  ["hf transformers"],
 
   // ── MLOps / DevOps ──
-  "mlops":        ["ml ops", "machine learning operations", "ml operations"],
-  "ml ops":       ["mlops"],
-  "kubernetes":   ["k8s"],
-  "k8s":          ["kubernetes"],
   // Resumes often use compound forms (Dockerfile, Dockerized) without ever
   // writing "Docker" alone. The word-boundary check in the regex fallback
   // rejects these, so the canonical keyword misses unless the compounds are
@@ -85,85 +121,34 @@ var KEYWORD_EXPANSIONS = {
   // ── Data engineering ──
   "pyspark":      ["apache spark", "spark ml", "spark mllib"],
   "apache spark": ["pyspark", "spark"],
-  "sql":          ["structured query language"],
-  "nosql":        ["no sql", "non-relational"],
+  "nosql":        ["non-relational"],
 
   // ── Standards / domain ──
   "iso 45001":  ["iso45001", "iso-45001", "ohsms", "occupational health and safety"],
   "iso 9001":   ["iso9001", "iso-9001", "quality management"],
   "nebsh":      ["nebsh igc", "international general certificate"],
-  "ctf":        ["capture the flag", "capture-the-flag"],
-  "fmcg":       ["fast moving consumer goods", "fast-moving consumer goods"],
-  "cpg":        ["consumer packaged goods", "packaged goods"],
+  "cpg":        ["packaged goods"],
 
   // ── API / misc ──
   "api":         ["application programming interface", "apis"],
-  "ner":         ["named entity recognition"],
-  "ocr":         ["optical character recognition"],
   "ir":          ["information retrieval"],
   "idp":         ["intelligent document processing"],
-  "resilience":  ["resiliency", "resilient"],
-  "resiliency":  ["resilience", "resilient"],
+  "resilience":  ["resilient"],
+  "resiliency":  ["resilient"],
 
-  // ── Cloud / Kubernetes managed services ──
-  // Abbreviations a recruiter types that the resume may write in full.
-  "gke":                       ["google kubernetes engine"],
-  "google kubernetes engine":  ["gke"],
-  "eks":                       ["amazon elastic kubernetes service"],
-  "amazon elastic kubernetes service": ["eks"],
-  "aks":                       ["azure kubernetes service"],
-  "azure kubernetes service":  ["aks"],
-
-  // ── IAM protocol / standard abbreviations ──
-  "sso":                       ["single sign-on", "single sign on"],
-  "single sign-on":            ["sso"],
-  "single sign on":            ["sso"],
-  "mfa":                       ["multi-factor authentication", "multifactor authentication", "two-factor authentication", "2fa"],
-  "2fa":                       ["mfa", "multi-factor authentication", "two-factor authentication"],
-  "multi-factor authentication": ["mfa", "2fa"],
-  "saml":                      ["security assertion markup language"],
-  "oauth":                     ["oauth 2.0", "open authorization"],
-  "oidc":                      ["openid connect"],
-  "openid connect":            ["oidc"],
-  "ldap":                      ["lightweight directory access protocol"],
-  "active directory":          ["microsoft active directory"],
-  "azure ad":                  ["azure active directory", "entra id", "microsoft entra"],
-  "entra":                     ["entra id", "azure ad", "azure active directory"],
-  "entra id":                  ["azure ad", "azure active directory", "microsoft entra"],
-
-  // ── PAM / identity governance tools ──
-  "cyberark":                  ["cyber ark"],
-  "cyber ark":                 ["cyberark"],
-  "forgerock":                 ["forge rock"],
-  "forge rock":                ["forgerock"],
-  "beyondtrust":               ["beyond trust"],
-  "beyond trust":              ["beyondtrust"],
-  "pam":                       ["privileged access management"],
-  "privileged access management": ["pam"],
-  "iga":                       ["identity governance and administration", "identity governance"],
-  "identity governance":       ["iga"],
-
-  // ── IAM / Identity & Access Management tools ──
-  // ping / pingidentity: typed as one word but resumes often write "Ping Identity" (two words).
-  // "ping" expands to compound forms; "pingidentity" expands to the spaced two-word form
-  // so both canonicals hit for any way a resume can write the product name.
-  "ping":            ["pingidentity", "ping federate", "pingfederate", "ping one"],
-  "pingidentity":    ["ping identity", "ping federate", "pingfederate"],
-  "ping federate":   ["pingfederate"],
-  "pingfederate":    ["ping federate"],
-  // sailpoint: SailPoint is almost always written as one CamelCase word ("SailPoint") or two
-  // words ("Sail Point"); the regex catches SailPoint but misses the spaced form.
-  "sailpoint":       ["sail point", "sailpoint iiq", "sailpoint identitynow"],
-  "sail point":      ["sailpoint"],
-  // okta: single token, matches all case forms natively — minimal expansions for sub-products.
-  "okta":            ["okta workforce", "okta verify", "okta sso"],
-  // ciam: the spelled-out form appears frequently in job descriptions and resumes.
-  "ciam":            ["customer identity and access management",
-                      "consumer identity and access management",
-                      "customer iam"],
-  // iam: general IAM — useful when recruiter types the abbreviation.
-  "iam":             ["identity and access management", "identity access management"],
-  "identity and access management": ["iam"],
+  // ── IAM ──
+  "saml":             ["security assertion markup language"],
+  "oauth":            ["oauth 2.0", "open authorization"],
+  "ldap":             ["lightweight directory access protocol"],
+  "active directory": ["microsoft active directory"],
+  // ping: "Ping Identity"/"Ping Federate" already match "ping"; list the joined forms.
+  "ping":             ["pingidentity", "pingfederate", "ping one"],
+  "pingidentity":     ["pingfederate", "ping federate"],
+  "sailpoint":        ["sailpoint iiq", "sailpoint identitynow"],
+  "okta":             ["okta workforce", "okta verify", "okta sso"],
+  "ciam":             ["customer identity and access management",
+                       "consumer identity and access management",
+                       "customer iam"],
 };
 
 var KEYWORD_TYPO_ALIASES = {
@@ -218,12 +203,42 @@ function canonicalizeKeywords(keywords) {
 
 function buildExpansionTable() {
   var table = {};
-  for (var k in KEYWORD_EXPANSIONS) {
-    if (Object.prototype.hasOwnProperty.call(KEYWORD_EXPANSIONS, k)) {
-      table[k] = KEYWORD_EXPANSIONS[k].slice();
+  function add(key, form) {
+    if (key === form) return;
+    var list = table[key] || (table[key] = []);
+    if (list.indexOf(form) < 0) list.push(form);
+  }
+  for (var g = 0; g < KEYWORD_SYNONYM_GROUPS.length; g++) {
+    var group = KEYWORD_SYNONYM_GROUPS[g];
+    for (var i = 0; i < group.length; i++) {
+      for (var j = 0; j < group.length; j++) add(group[i], group[j]);
     }
   }
+  for (var k in KEYWORD_EXPANSIONS) {
+    if (Object.prototype.hasOwnProperty.call(KEYWORD_EXPANSIONS, k)) {
+      for (var f = 0; f < KEYWORD_EXPANSIONS[k].length; f++) add(k, KEYWORD_EXPANSIONS[k][f]);
+    }
+  }
+  // Also file every entry under its compact key, so a search typed as "Single Sign On",
+  // "single-sign-on" or "singlesignon" finds the "single sign-on" entry.
+  var keys = Object.keys(table);
+  for (var c = 0; c < keys.length; c++) {
+    var ck = compactKey(keys[c]);
+    if (ck === keys[c]) continue;
+    for (var cf = 0; cf < table[keys[c]].length; cf++) add(ck, table[keys[c]][cf]);
+  }
   return table;
+}
+
+/** Lowercase, letters and digits only: "Single Sign-On" → "singlesignon". */
+function compactKey(term) {
+  return String(term || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/** Forms the table lists for a term as typed, matched exactly first, then by compact key. */
+function expansionsFor(table, term) {
+  var low = String(term || "").trim().toLowerCase();
+  return table[low] || table[compactKey(low)] || null;
 }
 
 function expandKeywords(keywords, expansionTable) {
@@ -234,7 +249,7 @@ function expandKeywords(keywords, expansionTable) {
   for (var k = 0; k < keywords.length; k++) {
     var key = (keywords[k] || "").trim().toLowerCase();
     if (!key) continue;
-    var forms = expansionTable[key];
+    var forms = expansionsFor(expansionTable, key);
     if (!forms) continue;
     for (var f = 0; f < forms.length; f++) {
       if (!expandedLower[forms[f].toLowerCase()]) {
@@ -299,7 +314,7 @@ function resolveKeywordsWithMeta(rawInput) {
 
   for (var k = 0; k < userKeywords.length; k++) {
     var key = userKeywords[k].toLowerCase();
-    var forms = table[key];
+    var forms = expansionsFor(table, key);
     if (!forms) continue;
     for (var f = 0; f < forms.length; f++) {
       var fl = forms[f].toLowerCase();
@@ -320,11 +335,13 @@ function resolveKeywordsWithMeta(rawInput) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    KEYWORD_SYNONYM_GROUPS: KEYWORD_SYNONYM_GROUPS,
     KEYWORD_EXPANSIONS: KEYWORD_EXPANSIONS,
     KEYWORD_TYPO_ALIASES: KEYWORD_TYPO_ALIASES,
     resolveKeywords: resolveKeywords,
     resolveKeywordsWithMeta: resolveKeywordsWithMeta,
     buildExpansionTable: buildExpansionTable,
+    expansionsFor: expansionsFor,
     parseKeywordsFromString: parseKeywordsFromString,
     canonicalizeKeywords: canonicalizeKeywords,
     expandKeywords: expandKeywords,

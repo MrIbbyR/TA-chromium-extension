@@ -18,7 +18,7 @@
   }
   var domMod = need("keyword-dom.js", ["sleep", "makePhaseTimer", "isCandidateProfilePage"]);
   var matchingMod = need("keyword-matching.js", [
-    "expandOneBooleanTerm", "normalizeForKw", "dedupeTextSegments", "collapseInlineRepeats",
+    "expandOneBooleanTerm", "booleanCanonicalMap", "normalizeForKw", "dedupeTextSegments", "collapseInlineRepeats",
     "sepFlexiblePatternSource", "isoListHit", "buildTokenIndex", "kwHitsInIndex", "findKeywordHits",
     "deduplicateHitsByCanonical", "countsFromResume", "parseBooleanQuery", "extractLeafTerms",
     "evaluateBooleanAst", "looksLikeSrSummaryChrome"
@@ -45,6 +45,7 @@
       makePhaseTimer = domMod.makePhaseTimer,
       isCandidateProfilePage = domMod.isCandidateProfilePage;
   var expandOneBooleanTerm = matchingMod.expandOneBooleanTerm,
+      booleanCanonicalMap = matchingMod.booleanCanonicalMap,
       normalizeForKw = matchingMod.normalizeForKw,
       dedupeTextSegments = matchingMod.dedupeTextSegments,
       collapseInlineRepeats = matchingMod.collapseInlineRepeats,
@@ -685,22 +686,21 @@
     var booleanPass = evaluateBooleanAst(ast, matchedSet);
 
     /* ── Collect ALL hits for notes — every term found goes in, regardless of NOT ── */
+    // Synonyms fold back under the term the user typed ("Amazon Web Services" on the
+    // CV → "aws (x1)"), as in keyword mode, so the note lists one line per query term.
     // Counts come from the resume when available, so profile/skill chrome doesn't inflate them.
-    var boolCountMap = countsFromResume(resumeText, uniqueScans, null);
+    var boolCanonMap = booleanCanonicalMap(positiveTerms.concat(negativeTerms));
+    var boolHits = deduplicateHitsByCanonical(scanResult.hits, boolCanonMap);
+    var boolCountMap = countsFromResume(resumeText, uniqueScans, boolCanonMap);
     var allHitLabels = [];
-    var seenHitLabel = {};
-    for (var pi = 0; pi < scanResult.hits.length; pi++) {
-      var hit = scanResult.hits[pi];
+    for (var pi = 0; pi < boolHits.length; pi++) {
+      var hit = boolHits[pi];
       var bc = boolCountMap ? boolCountMap[hit.keyword.toLowerCase()] : undefined;
       if (bc == null) bc = hit.count;
-      var label = bc > 1 ? hit.keyword + " (x" + bc + ")" : hit.keyword;
-      var lbl = label.toLowerCase();
-      if (seenHitLabel[lbl]) continue;
-      seenHitLabel[lbl] = true;
-      allHitLabels.push(label);
+      allHitLabels.push(bc > 1 ? hit.keyword + " (x" + bc + ")" : hit.keyword);
     }
 
-    log.push({ ok: true, msg: "Boolean: " + allHitLabels.length + " terms matched out of " + uniqueScans.length + " scanned" });
+    log.push({ ok: true, msg: "Boolean: " + allHitLabels.length + " of " + totalTerms + " terms matched (" + uniqueScans.length + " forms scanned)" });
     if (allHitLabels.length) {
       log.push({ ok: true, msg: "Hits: " + allHitLabels.join(", ") });
     }
@@ -915,6 +915,7 @@
       isoListHit: isoListHit,
       findKeywordHits: findKeywordHits,
       deduplicateHitsByCanonical: deduplicateHitsByCanonical,
+      booleanCanonicalMap: booleanCanonicalMap,
       formatNoteText: formatNoteText,
       formatNoteHtml: formatNoteHtml,
       displayKeywordLabel: displayKeywordLabel,

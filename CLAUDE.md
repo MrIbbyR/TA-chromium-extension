@@ -148,7 +148,7 @@ These invariants are enforced by `tests/gdpr-data-handling.test.js`, which scans
 ### Keyword Matching (`keyword-matching.js` + `keyword-expansions.js`)
 
 Two search modes:
-- **Keywords mode**: comma-separated terms with abbreviation expansion via `keyword-expansions.js`, prefix wildcard support (`Python*`), ISO list splitting, and token-index bigram matching
+- **Keywords mode**: comma-separated terms with abbreviation expansion via `keyword-expansions.js` (`KEYWORD_SYNONYM_GROUPS`: one line per skill, every form finds every other; `KEYWORD_EXPANSIONS`: one-way extras like `docker → container`; `buildExpansionTable()` merges both and `expansionsFor()` looks a typed term up ignoring spaces/hyphens — boolean leaves use the same table, and their note hits fold back to the typed term via `booleanCanonicalMap`), prefix wildcard support (`Python*`), ISO list splitting, and token-index bigram matching
 - **Boolean mode**: LinkedIn Recruiter syntax parsed into an AST (`parseBooleanQuery` → `evaluateBooleanAst`). Operator precedence: NOT > AND > OR. Implicit AND between adjacent terms. Quoted phrases are single TERM nodes.
 
 ### Keyword Notes (`postKeywordHitsToNotes` in `keyword-notes.js`)

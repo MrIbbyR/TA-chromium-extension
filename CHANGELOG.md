@@ -5,6 +5,24 @@ MAJOR for breaking changes to user workflow or stored data, MINOR for new featur
 
 The top `## [x.y.z]` heading must match `"version"` in `manifest.json` — `tests/release.test.js` enforces this.
 
+## [2.8.0] - 2026-11-17
+
+Keyword and boolean search now find a skill however a CV writes it, and the extension keeps no candidate data after a run.
+
+### Added
+- **Synonym groups for skills.** Each skill is one line listing every way a CV might write it: AWS, Amazon Web Services, Amazon Cloud Services and AWS Cloud, or GCP, Google Cloud Platform, Google Cloud and GCloud. Searching any one finds the others, in both keyword and boolean search. Cloud, ML/AI, identity tools and common domain abbreviations are covered.
+- **Searches ignore spacing and hyphens.** Typing "Single Sign On", "single-sign-on" or "Amazon-Web-Services" finds the same synonyms as the usual spelling.
+
+### Changed
+- **Boolean notes group synonyms under your search term.** A CV that says "Amazon Web Services" shows as "AWS" in the note when you searched for AWS, with one line per term, as keyword notes do. The "Boolean match N/T" count no longer counts two spellings of the same term twice.
+- **"computer vision" no longer matches "CV".** Nearly every CV contains the word "CV", so the search was close to an automatic hit. Searching "cv" still finds "computer vision".
+- **Non-INR salary answers are copied exactly as typed** in keyword notes (27000 stays 27000). Screening questions that don't end in "?", such as "(gross per year)" prompts, are now read.
+- **No candidate data is kept after a run.** The saved last run holds only totals and step durations; per-profile results go once to an open popup and are never stored. Data saved by older versions is deleted.
+
+### Removed
+- **Cost Assist "Wait after Screening" and "Dry run" settings.** The wait always uses the 600 ms default, and Cost Assist always moves in-budget candidates forward.
+- **Stored per-profile diagnostics.** In dev builds, "Diagnose this profile" scans the open profile on demand and stores nothing.
+
 ## [2.7.0] - 2026-10-20
 
 Keyword notes now show the candidate's current role and, for jobs outside the EU/EEA, their salary answers.

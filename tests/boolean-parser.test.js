@@ -146,3 +146,49 @@ describe('extractLeafTerms', () => {
     assert.ok(pos && pos.negated === false);
   });
 });
+
+describe('boolean synonyms — "aws" finds how a CV might write it', () => {
+  const {
+    booleanCanonicalMap, expandOneBooleanTerm, findKeywordHits, deduplicateHitsByCanonical,
+  } = require('../keyword-matching.js');
+
+  // Mirrors runBooleanTriageWithDoc: scan every form, fold hits to the typed term.
+  function runBoolean(query, text) {
+    const ast = parseBooleanQuery(query);
+    const terms = [...new Set(extractLeafTerms(ast).map(l => l.value))];
+    const map = booleanCanonicalMap(terms);
+    const scans = [...new Set(terms.flatMap(t => expandOneBooleanTerm(t)))];
+    const hits = findKeywordHits(text, scans, { maxItems: 15000, scanEveryKeyword: true }).hits;
+    const matched = {};
+    for (const h of hits) matched[map[h.keyword.toLowerCase()].toLowerCase()] = true;
+    return { pass: evaluateBooleanAst(ast, matched), hits: deduplicateHitsByCanonical(hits, map) };
+  }
+
+  for (const cv of ['Amazon Web Services', 'AWS', 'Amazon Cloud Services', 'amazon web service', 'AWS Cloud']) {
+    it(`"aws AND python" passes on a CV that says "${cv}"`, () => {
+      const r = runBoolean('aws AND python', `Built data pipelines in Python on ${cv} (EC2, S3).`);
+      assert.strictEqual(r.pass, true);
+      assert.deepStrictEqual(r.hits.map(h => h.keyword).sort(), ['aws', 'python']);
+    });
+  }
+
+  it('both spellings on one CV give one note line under the typed term', () => {
+    const r = runBoolean('aws', 'AWS certified. 5 years on Amazon Web Services. AWS Lambda.');
+    assert.deepStrictEqual(r.hits.map(h => h.keyword), ['aws']);
+  });
+
+  it('the typed spelling is kept, whichever form the CV uses', () => {
+    const r = runBoolean('"Amazon Web Services"', 'Deployed on AWS.');
+    assert.deepStrictEqual(r.hits.map(h => h.keyword), ['Amazon Web Services']);
+  });
+
+  it('two typed synonyms stay separate terms', () => {
+    const map = booleanCanonicalMap(['aws', 'amazon web services']);
+    assert.strictEqual(map['aws'], 'aws');
+    assert.strictEqual(map['amazon web services'], 'amazon web services');
+  });
+
+  it('NOT aws excludes a CV that only says Amazon Web Services', () => {
+    assert.strictEqual(runBoolean('python AND NOT aws', 'Python on Amazon Web Services').pass, false);
+  });
+});

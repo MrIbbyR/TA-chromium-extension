@@ -1103,7 +1103,7 @@ function updateKwExpandedPreview() {
     return;
   }
   try {
-    const expTable = (typeof KEYWORD_EXPANSIONS !== "undefined") ? KEYWORD_EXPANSIONS : {};
+    const expTable = (typeof buildExpansionTable === "function") ? buildExpansionTable() : {};
     const typos    = (typeof KEYWORD_TYPO_ALIASES !== "undefined") ? KEYWORD_TYPO_ALIASES : {};
     const userKws  = val.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
     const userLow  = new Set(userKws.map(s => s.toLowerCase()));
@@ -1135,7 +1135,7 @@ function updateKwExpandedPreview() {
     for (const kw of userKws) {
       const lower = kw.toLowerCase();
       const canonical = typos[lower] || lower;
-      const synonyms = (expTable[canonical] || [])
+      const synonyms = ((typeof expansionsFor === "function" ? expansionsFor(expTable, canonical) : expTable[canonical]) || [])
         .filter(e => !globalSeen.has(e.toLowerCase()))
         .slice(0, 8);
       const hasSep = isCompound(kw) || synonyms.some(s => isCompound(s));

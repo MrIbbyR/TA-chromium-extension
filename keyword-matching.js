@@ -8,7 +8,12 @@
   "use strict";
 
   // KEYWORD_EXPANSIONS, KEYWORD_TYPO_ALIASES, and resolver functions are loaded from
-  // keyword-expansions.js (runs as a content script before this file).
+  // keyword-expansions.js (runs as a content script before this file). Under Node
+  // those globals don't exist, so take them from require() instead.
+  /** @type {{ KEYWORD_TYPO_ALIASES: Record<string, string>, buildExpansionTable: () => Record<string, string[]>, expansionsFor: (table: Record<string, string[]>, term: string) => string[] | null }} */
+  var EXP = typeof KEYWORD_TYPO_ALIASES !== "undefined"
+    ? { KEYWORD_TYPO_ALIASES: KEYWORD_TYPO_ALIASES, buildExpansionTable: buildExpansionTable, expansionsFor: expansionsFor }
+    : require("./keyword-expansions.js");
 
   /** @typedef {{ keyword: string, count: number }} KeywordHit */
   /**
@@ -34,8 +39,8 @@
     var t = (term || "").trim();
     if (!t) return [];
     var low = t.toLowerCase();
-    if (KEYWORD_TYPO_ALIASES[low]) t = KEYWORD_TYPO_ALIASES[low];
-    var table = buildExpansionTable();
+    if (EXP.KEYWORD_TYPO_ALIASES[low]) t = EXP.KEYWORD_TYPO_ALIASES[low];
+    var table = EXP.buildExpansionTable();
     /** @type {string[]} */
     var out = [];
     /** @type {Record<string, boolean>} */
@@ -50,11 +55,38 @@
       out.push(x);
     }
     push(t);
-    var forms = table[t.toLowerCase()];
+    var forms = EXP.expansionsFor(table, t);
     if (forms) {
       for (var i = 0; i < forms.length; i++) push(forms[i]);
     }
     return out;
+  }
+
+  /**
+   * Map every scanned form of the boolean leaves back to the term the user typed,
+   * so a note shows "AWS (x3)" for a CV that says "Amazon Web Services" instead of
+   * listing each synonym as its own hit. A user-typed term always maps to itself;
+   * a synonym maps to the first typed term that produced it.
+   * @param {string[]} terms - distinct leaf terms as typed (positive and NOT)
+   * @returns {Record<string, string>} lowercased form → typed term
+   */
+  function booleanCanonicalMap(terms) {
+    /** @type {Record<string, string>} */
+    var map = Object.create(null);
+    for (var i = 0; i < terms.length; i++) {
+      var t = (terms[i] || "").trim();
+      if (t) map[t.toLowerCase()] = t;
+    }
+    for (var j = 0; j < terms.length; j++) {
+      var typed = (terms[j] || "").trim();
+      if (!typed) continue;
+      var forms = expandOneBooleanTerm(typed);
+      for (var f = 0; f < forms.length; f++) {
+        var fl = forms[f].toLowerCase();
+        if (!map[fl]) map[fl] = typed;
+      }
+    }
+    return map;
   }
 
   /* ── Text normalization (ported from req.py _normalize_for_kw) ── */
@@ -737,6 +769,7 @@
 
   var api = {
     expandOneBooleanTerm: expandOneBooleanTerm,
+    booleanCanonicalMap: booleanCanonicalMap,
     normalizeForKw: normalizeForKw,
     dedupeTextSegments: dedupeTextSegments,
     collapseInlineRepeats: collapseInlineRepeats,

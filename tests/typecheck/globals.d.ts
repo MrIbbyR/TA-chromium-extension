@@ -11,3 +11,4 @@ declare var __srKw: Record<string, any> | undefined;
 declare var KEYWORD_EXPANSIONS: Record<string, string[]>;
 declare var KEYWORD_TYPO_ALIASES: Record<string, string>;
 declare function buildExpansionTable(): Record<string, string[]>;
+declare function expansionsFor(table: Record<string, string[]>, term: string): string[] | null;

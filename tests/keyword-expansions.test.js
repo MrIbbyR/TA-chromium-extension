@@ -140,9 +140,11 @@ describe('resolveKeywordsWithMeta', () => {
   });
 
   it('expansion forms map back to the user-typed canonical', () => {
-    const { canonicalMap } = resolveKeywordsWithMeta('tensorflow');
+    const { keywords, canonicalMap } = resolveKeywordsWithMeta('tensorflow');
     assert.strictEqual(canonicalMap['tensor flow'], 'tensorflow');
-    assert.strictEqual(canonicalMap['tensor-flow'], 'tensorflow');
+    const { findKeywordHits, deduplicateHitsByCanonical } = require('../keyword-matching.js');
+    const hits = deduplicateHitsByCanonical(findKeywordHits('Built models in Tensor-Flow', keywords).hits, canonicalMap);
+    assert.deepStrictEqual(hits.map(h => h.keyword), ['tensorflow']);
   });
 
   it('when user types both canonical and an alias, each maps to itself', () => {
@@ -170,5 +172,62 @@ describe('resolveKeywordsWithMeta', () => {
     assert.deepEqual(keywords, []);
     assert.strictEqual(Object.keys(canonicalMap).length, 0);
     assert.strictEqual(userCount, 0);
+  });
+});
+
+describe('synonym groups — every way a CV writes a skill, in both search modes', () => {
+  const { KEYWORD_SYNONYM_GROUPS, buildExpansionTable } = require('../keyword-expansions.js');
+  const { expandOneBooleanTerm, findKeywordHits } = require('../keyword-matching.js');
+  const found = (cv, forms) => findKeywordHits(cv, forms, { scanEveryKeyword: true }).hits.length > 0;
+
+  it('every form of a group finds every other form (keyword and boolean)', () => {
+    for (const group of KEYWORD_SYNONYM_GROUPS) {
+      for (const typed of group) {
+        const kw = resolveKeywords(typed);
+        const bool = expandOneBooleanTerm(typed);
+        for (const cv of group) {
+          assert.ok(found(`Experience: ${cv}.`, kw), `keyword "${typed}" should find "${cv}"`);
+          assert.ok(found(`Experience: ${cv}.`, bool), `boolean "${typed}" should find "${cv}"`);
+        }
+      }
+    }
+  });
+
+  it('no form is in two groups', () => {
+    const seen = new Map();
+    KEYWORD_SYNONYM_GROUPS.forEach((group, gi) => group.forEach(f => {
+      assert.ok(!seen.has(f), `"${f}" is in groups ${seen.get(f)} and ${gi}`);
+      seen.set(f, gi);
+    }));
+  });
+
+  const cases = {
+    aws: ['AWS', 'Amazon Web Services', 'Amazon-Web-Services', 'Amazon Cloud Services', 'AWS Cloud'],
+    gcp: ['GCP', 'Google Cloud Platform', 'Google Cloud', 'GoogleCloud', 'gcloud'],
+    azure: ['Azure', 'Microsoft Azure', 'MS Azure', 'Windows Azure'],
+    pytorch: ['PyTorch', 'Py-Torch', 'Py Torch', 'py_torch'],
+    kubernetes: ['Kubernetes', 'K8s'],
+  };
+  for (const [search, cvs] of Object.entries(cases)) {
+    it(`"${search}" finds ${cvs.join(', ')}`, () => {
+      for (const cv of cvs) {
+        assert.ok(found(`Skills: ${cv}`, resolveKeywords(search)), `keyword: ${cv}`);
+        assert.ok(found(`Skills: ${cv}`, expandOneBooleanTerm(search)), `boolean: ${cv}`);
+      }
+    });
+  }
+
+  it('the search can be typed with any spacing or hyphens', () => {
+    for (const typed of ['Single Sign On', 'single-sign-on', 'Amazon-Web-Services', 'Google Cloud-Platform']) {
+      assert.ok(expandOneBooleanTerm(typed).length > 1, `boolean "${typed}" expands`);
+      assert.ok(resolveKeywords(typed).length > 1, `keyword "${typed}" expands`);
+    }
+  });
+
+  it('one-way extras stay one-way (Docker finds "container", not the reverse)', () => {
+    const t = buildExpansionTable();
+    assert.ok(t.docker.includes('container'));
+    assert.ok(!(t.container || []).includes('docker'));
+    assert.ok(!(t['computer vision'] || []).includes('cv'), 'every CV says "CV"');
   });
 });
