@@ -341,6 +341,34 @@
   var _KW_SFX = ["", "s", "es", "ed", "ing"];
 
   /**
+   * Keywords whose symbols are part of the name: C#, F#, C++, .NET. The token
+   * matcher keeps only letters and digits, so "C#" would match any lone "C" and
+   * ".NET" any "net" ("net revenue"). These get an exact, symbol-keeping match.
+   * @param {string} kwNorm
+   */
+  function isSymbolKeyword(kwNorm) {
+    return /[#+]/.test(kwNorm) || /^\.[A-Za-z]/.test(kwNorm);
+  }
+
+  /**
+   * Regex source for a symbol keyword. Left edge: no letter/digit before it; a
+   * leading "." also matches ASP.NET / VB.NET / ADO.NET, but not a domain
+   * (comcast.net). Right edge: no letter or symbol after it; a version number may
+   * follow ("C++17").
+   * @param {string} kwNorm
+   */
+  function symbolPatternSource(kwNorm) {
+    var body = kwNorm.trim().split(/\s+/).map(function (p) {
+      return p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }).join("\\s+");
+    var left = kwNorm.charAt(0) === "."
+      ? "(?:(?<![A-Za-z0-9.@])|(?<=\\b(?:asp|vb|ado)))"
+      : "(?<![A-Za-z0-9])";
+    var right = /[#+]$/.test(kwNorm) ? "(?![A-Za-z#+])" : "(?![A-Za-z0-9])";
+    return left + body + right;
+  }
+
+  /**
    * Look up a normalised keyword in the token index.
    * Returns hit count (≥1), 0 (not found), or -1 (needs regex — 4+ token phrase
    * or multi-token wildcard the index can't resolve directly).
@@ -446,9 +474,13 @@
       }
 
       var count = 0;
-      var idxResult = kwHitsInIndex(kwNorm, idx, isWildcard);
+      var symbolKw = !isWildcard && isSymbolKeyword(kwNorm);
+      var idxResult = symbolKw ? 0 : kwHitsInIndex(kwNorm, idx, isWildcard);
 
-      if (idxResult > 0) {
+      if (symbolKw) {
+        var sm = hay.match(new RegExp(symbolPatternSource(kwNorm), "gi"));
+        count = sm ? sm.length : 0;
+      } else if (idxResult > 0) {
         count = idxResult;
       } else if (idxResult === -1 || idxResult === 0) {
         // -1: 4+ token phrase or multi-token wildcard.

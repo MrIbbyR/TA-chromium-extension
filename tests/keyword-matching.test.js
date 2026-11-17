@@ -814,3 +814,40 @@ describe('job country gate for salary in notes', () => {
     assert.equal(salaryAllowedForJobCountry(''), false);
   });
 });
+
+describe('symbol keywords — C#, C++, F#, .NET', () => {
+  const { findKeywordHits, expandOneBooleanTerm } = require('../keyword-matching.js');
+  const { resolveKeywords } = require('../keyword-expansions.js');
+  const hit = (text, kw) => findKeywordHits(text, [kw], { scanEveryKeyword: true }).hits.length > 0;
+
+  it('C# and C++ need their symbols; a lone "C" is not C#', () => {
+    assert.ok(!hit('Skilled in C and Python', 'C#'));
+    assert.ok(!hit('Wrote embedded C code', 'C++'));
+    assert.ok(!hit('Got a C+ in maths', 'C++'));
+    assert.ok(hit('Senior C# developer', 'C#'));
+    assert.ok(hit('Modern C++17 and C++20', 'C++'));
+    assert.ok(hit('F# and OCaml', 'F#'));
+  });
+
+  it('.NET needs the dot, and matches ASP.NET / VB.NET but not a domain', () => {
+    assert.ok(!hit('Grew net revenue 20%', '.NET'));
+    assert.ok(!hit('Email: jane@comcast.net', '.NET'));
+    assert.ok(!hit('Portfolio at www.example.net', '.NET'));
+    assert.ok(hit('.NET Core microservices', '.NET'));
+    assert.ok(hit('Built ASP.NET MVC apps', '.NET'));
+    assert.ok(hit('Maintained VB.NET code', '.NET'));
+    assert.ok(hit('Stack: C#/.NET', '.NET'));
+  });
+
+  it('synonyms: C Sharp, CPP, DotNet — keyword and boolean', () => {
+    for (const [search, cv] of [['C#', 'C Sharp'], ['csharp', 'C#'], ['C++', 'CPP'], ['.NET', 'DotNet'], ['dot net', 'ASP.NET']]) {
+      assert.ok(findKeywordHits(cv, resolveKeywords(search), { scanEveryKeyword: true }).hits.length, `keyword ${search} → ${cv}`);
+      assert.ok(findKeywordHits(cv, expandOneBooleanTerm(search), { scanEveryKeyword: true }).hits.length, `boolean ${search} → ${cv}`);
+    }
+  });
+
+  it('searching "C" or "net" does not pull in C# / .NET synonyms', () => {
+    assert.deepStrictEqual(expandOneBooleanTerm('C'), ['C']);
+    assert.deepStrictEqual(expandOneBooleanTerm('net'), ['net']);
+  });
+});

@@ -284,7 +284,14 @@
    "WAF IAM SSO CIAM SIEM SOC DNS VPN DDoS OSINT CTF OCR RPA ETL ELT BI KPI CRM ERP SAP GIS " +
    "QA UI UX SEO GDPR ISO HR TA B2B B2C FMCG CPG MBA MSc BSc PhD R&D CI/CD DevOps MLOps SecOps SaaS PaaS IaaS " +
    "iOS macOS PyTorch TensorFlow NumPy OpenCV JavaScript TypeScript GitHub GitLab LinkedIn " +
-   "PostgreSQL MySQL MongoDB SailPoint .NET C# C++ Node.js K8s").split(" ").forEach(function (w) {
+   "PostgreSQL MySQL MongoDB SailPoint .NET C# C++ Node.js K8s " +
+   // Abbreviations from KEYWORD_SYNONYM_GROUPS (keyword-expansions.js)
+   "GKE EKS AKS AAD MFA OIDC PAM IGA NER EC2 S3 RDS ECS ECR EFS EBS ELB SQS SNS MSK KMS CDK VPC " +
+   "GCS GAE BigQuery Pub/Sub ADF ADLS ACR ACI APIM AVD IaC SRE ArgoCD DWH EDW OLAP OLTP RDBMS HDFS " +
+   "MSSQL SSIS SSRS SSAS T-SQL PL/SQL GenAI CNN RNN LSTM SVM KNN PCA NLU NLG ASR TTS XDR EDR DLP " +
+   "SOAR CASB CSPM SAST DAST VAPT PKI HSM ZTNA GRC DFIR SDLC TDD BDD DDD SOA OOP ORM SDK JVM JWT SSR " +
+   "CDN SD-WAN BGP HCM ITSM SFDC XGBoost LightGBM HuggingFace CyberArk ForgeRock BeyondTrust " +
+   "PingIdentity PingFederate CPP").split(" ").forEach(function (w) {
     KEYWORD_DISPLAY_CASE[w.toLowerCase()] = w;
   });
   var KEYWORD_SMALL_WORDS = { and: 1, or: 1, of: 1, in: 1, on: 1, for: 1, with: 1, to: 1, the: 1, a: 1, an: 1 };

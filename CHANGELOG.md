@@ -12,6 +12,11 @@ Keyword and boolean search now find a skill however a CV writes it, and the exte
 ### Added
 - **Synonym groups for skills.** Each skill is one line listing every way a CV might write it: AWS, Amazon Web Services, Amazon Cloud Services and AWS Cloud, or GCP, Google Cloud Platform, Google Cloud and GCloud. Searching any one finds the others, in both keyword and boolean search. Cloud, ML/AI, identity tools and common domain abbreviations are covered.
 - **Searches ignore spacing and hyphens.** Typing "Single Sign On", "single-sign-on" or "Amazon-Web-Services" finds the same synonyms as the usual spelling.
+- **Tech abbreviations find their full names, and the reverse.** About 95 pairs across AWS, Google Cloud, Azure, data, ML, security, networking and enterprise tools: GKE ↔ Google Kubernetes Engine, ADF ↔ Azure Data Factory, SIEM ↔ Security Information and Event Management, ECS ↔ Elastic Container Service, and so on. Abbreviations that are also common words or names on CVs (GCE, HCL, GAN, EMR, IDS…) are left out. Notes print them in capitals (GKE, not Gke).
+
+### Fixed
+- **C#, C++, F# and .NET searches match exactly.** Searching C# or C++ no longer tags any CV with a lone "C", and .NET no longer tags "net revenue" or email addresses ending in .net. ASP.NET, VB.NET and C++17 still count. C Sharp, CPP and DotNet are found as synonyms.
+- **Product names print correctly in notes**: XGBoost, LightGBM, CyberArk, ForgeRock, BeyondTrust.
 
 ### Changed
 - **Boolean notes group synonyms under your search term.** A CV that says "Amazon Web Services" shows as "AWS" in the note when you searched for AWS, with one line per term, as keyword notes do. The "Boolean match N/T" count no longer counts two spellings of the same term twice.

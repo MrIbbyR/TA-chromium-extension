@@ -44,7 +44,7 @@ var KEYWORD_SYNONYM_GROUPS = [
   ["iam", "identity and access management", "identity access management"],
   ["pam", "privileged access management"],
   ["iga", "identity governance and administration", "identity governance"],
-  ["azure ad", "azure active directory", "entra id", "microsoft entra", "entra"],
+  ["azure ad", "aad", "azure active directory", "entra id", "microsoft entra", "entra"],
   ["sailpoint", "sail point"],
   ["cyberark", "cyber ark"],
   ["forgerock", "forge rock"],
@@ -61,6 +61,132 @@ var KEYWORD_SYNONYM_GROUPS = [
   ["sql", "structured query language"],
   ["nosql", "no sql"],
   ["resilience", "resiliency"],
+
+  // ── Abbreviation ↔ full name ──
+  // The ones a recruiter types as an abbreviation while the CV spells it out (or
+  // the reverse). Abbreviation first; add it to KEYWORD_DISPLAY_CASE in
+  // keyword-notes.js so the note prints it in capitals (a test checks).
+  // Left out on purpose — the abbreviation is also a common word or name on CVs:
+  // GCE (GCE O-Levels), HCL (HCL Technologies), GAN (surname), EMR (medical records),
+  // CDC, EDA, ARM, SAM, SPA, IDS/IPS ("user IDs"), BQ.
+
+  // Languages whose names carry symbols (matched exactly — see isSymbolKeyword)
+  ["c#", "c sharp", "csharp"],
+  ["c++", "cpp"],
+  [".net", "dotnet", "dot net"],
+
+  // AWS services
+  ["ec2", "elastic compute cloud"],
+  ["s3", "simple storage service"],
+  ["rds", "relational database service"],
+  ["ecs", "elastic container service"],
+  ["ecr", "elastic container registry"],
+  ["efs", "elastic file system"],
+  ["ebs", "elastic block store"],
+  ["elb", "elastic load balancer", "elastic load balancing"],
+  ["sqs", "simple queue service"],
+  ["sns", "simple notification service"],
+  ["msk", "managed streaming for kafka", "managed streaming for apache kafka"],
+  ["kms", "key management service"],
+  ["cdk", "cloud development kit"],
+  ["vpc", "virtual private cloud"],
+
+  // Google Cloud
+  ["gcs", "google cloud storage"],
+  ["gae", "google app engine"],
+  ["bigquery", "big query"],
+  ["pub/sub", "pubsub"],
+
+  // Azure
+  ["adf", "azure data factory"],
+  ["adls", "azure data lake storage", "azure data lake"],
+  ["acr", "azure container registry"],
+  ["aci", "azure container instances"],
+  ["apim", "azure api management"],
+  ["avd", "azure virtual desktop"],
+
+  // DevOps / platform
+  ["iac", "infrastructure as code"],
+  ["sre", "site reliability engineering", "site reliability engineer"],
+  ["argocd", "argo cd"],
+
+  // Data
+  ["etl", "extract transform load"],
+  ["elt", "extract load transform"],
+  ["dwh", "data warehouse", "data warehousing"],
+  ["edw", "enterprise data warehouse"],
+  ["olap", "online analytical processing"],
+  ["oltp", "online transaction processing"],
+  ["rdbms", "relational database management system"],
+  ["hdfs", "hadoop distributed file system"],
+  ["mssql", "ms sql", "sql server"],
+  ["ssis", "sql server integration services"],
+  ["ssrs", "sql server reporting services"],
+  ["ssas", "sql server analysis services"],
+  ["t-sql", "transact-sql"],
+  ["pl/sql", "plsql"],
+  ["power bi", "powerbi"],
+
+  // ML / AI
+  ["genai", "generative ai", "gen ai"],
+  ["cnn", "convolutional neural network"],
+  ["rnn", "recurrent neural network"],
+  ["lstm", "long short-term memory"],
+  ["svm", "support vector machine"],
+  ["knn", "k-nearest neighbor", "k-nearest neighbour"],
+  ["pca", "principal component analysis"],
+  ["nlu", "natural language understanding"],
+  ["nlg", "natural language generation"],
+  ["asr", "automatic speech recognition"],
+  ["tts", "text to speech"],
+  ["opencv", "open cv"],
+
+  // Security
+  ["siem", "security information and event management"],
+  ["soar", "security orchestration automation and response"],
+  ["soc", "security operations center", "security operations centre"],
+  ["edr", "endpoint detection and response"],
+  ["xdr", "extended detection and response"],
+  ["dlp", "data loss prevention"],
+  ["waf", "web application firewall"],
+  ["casb", "cloud access security broker"],
+  ["cspm", "cloud security posture management"],
+  ["sast", "static application security testing"],
+  ["dast", "dynamic application security testing"],
+  ["vapt", "vulnerability assessment and penetration testing"],
+  ["pki", "public key infrastructure"],
+  ["hsm", "hardware security module"],
+  ["ztna", "zero trust network access"],
+  ["grc", "governance risk and compliance", "governance risk & compliance"],
+  ["dfir", "digital forensics and incident response"],
+
+  // Engineering practice / architecture
+  ["sdlc", "software development life cycle", "software development lifecycle"],
+  ["tdd", "test driven development"],
+  ["bdd", "behavior driven development", "behaviour driven development"],
+  ["ddd", "domain driven design"],
+  ["soa", "service oriented architecture"],
+  ["oop", "object oriented programming"],
+  ["orm", "object relational mapping"],
+  ["sdk", "software development kit"],
+  ["jvm", "java virtual machine"],
+  ["jwt", "json web token"],
+  ["ssr", "server side rendering"],
+
+  // Networking
+  ["cdn", "content delivery network"],
+  ["vpn", "virtual private network"],
+  ["dns", "domain name system"],
+  ["bgp", "border gateway protocol"],
+  ["sd-wan", "software defined wan", "software defined wide area network"],
+
+  // Enterprise platforms
+  ["crm", "customer relationship management"],
+  ["erp", "enterprise resource planning"],
+  ["hcm", "human capital management"],
+  ["itsm", "it service management"],
+  ["rpa", "robotic process automation"],
+  ["sfdc", "salesforce"],
 ];
 
 // ── One-way extras ──
@@ -224,7 +350,7 @@ function buildExpansionTable() {
   var keys = Object.keys(table);
   for (var c = 0; c < keys.length; c++) {
     var ck = compactKey(keys[c]);
-    if (ck === keys[c]) continue;
+    if (ck === keys[c] || hasNameSymbols(keys[c])) continue;
     for (var cf = 0; cf < table[keys[c]].length; cf++) add(ck, table[keys[c]][cf]);
   }
   return table;
@@ -235,10 +361,16 @@ function compactKey(term) {
   return String(term || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+/** C#, C++, .NET: the symbols are the name, so "c#" must not file under "c". */
+function hasNameSymbols(term) {
+  return /[#+]/.test(term) || /^\.[a-z]/i.test(term);
+}
+
 /** Forms the table lists for a term as typed, matched exactly first, then by compact key. */
 function expansionsFor(table, term) {
   var low = String(term || "").trim().toLowerCase();
-  return table[low] || table[compactKey(low)] || null;
+  if (table[low]) return table[low];
+  return hasNameSymbols(low) ? null : table[compactKey(low)] || null;
 }
 
 function expandKeywords(keywords, expansionTable) {

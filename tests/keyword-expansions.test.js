@@ -231,3 +231,35 @@ describe('synonym groups — every way a CV writes a skill, in both search modes
     assert.ok(!(t['computer vision'] || []).includes('cv'), 'every CV says "CV"');
   });
 });
+
+describe('abbreviation groups', () => {
+  const { KEYWORD_SYNONYM_GROUPS } = require('../keyword-expansions.js');
+  const { displayKeywordLabel } = require('../keyword-notes.js');
+
+  it('notes print the first form of each group with its usual capitals (add it to KEYWORD_DISPLAY_CASE)', () => {
+    const plainCapitalOk = ['azure', 'kubernetes', 'resilience', 's3', 'sklearn', 'c#', 'c++'];
+    for (const [head] of KEYWORD_SYNONYM_GROUPS) {
+      if (/\s/.test(head) || plainCapitalOk.includes(head)) continue;
+      assert.notStrictEqual(displayKeywordLabel(head), head.charAt(0).toUpperCase() + head.slice(1),
+        `"${head}" would print as "${displayKeywordLabel(head)}" in notes`);
+    }
+  });
+
+  const cvs = {
+    gke: 'Ran workloads on Google Kubernetes Engine',
+    adf: 'Built pipelines in Azure Data Factory',
+    siem: 'Tuned Security Information and Event Management rules',
+    ec2: 'Deployed on Elastic Compute Cloud',
+    mssql: 'Administered MS-SQL and SQL Server 2019',
+    'sd-wan': 'Rolled out Software-Defined WAN',
+    grc: 'Led Governance, Risk & Compliance',
+    bdd: 'Practised behaviour-driven development',
+  };
+  for (const [search, cv] of Object.entries(cvs)) {
+    it(`"${search}" finds: ${cv}`, () => {
+      const { expandOneBooleanTerm, findKeywordHits } = require('../keyword-matching.js');
+      assert.ok(findKeywordHits(cv, resolveKeywords(search), { scanEveryKeyword: true }).hits.length, 'keyword');
+      assert.ok(findKeywordHits(cv, expandOneBooleanTerm(search), { scanEveryKeyword: true }).hits.length, 'boolean');
+    });
+  }
+});
